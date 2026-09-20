@@ -81,7 +81,7 @@
     </div>
   </div>
   <div class="toggle-row">
-    <input type="checkbox" id="lock" checked>
+    <input type="checkbox" id="lock">
     <label for="lock">Lock top = bottom</label>
   </div>
 
@@ -185,7 +185,7 @@ const TWO_PI = Math.PI * 2, HALF_PI = Math.PI / 2;
 //  State
 // ============================================================================
 let uiHeight = 50, uiTopW = 40, uiBotW = 40;
-let lockEqual = true;
+let lockEqual = false;
 let showFlaps = false;
 let nSides = FLAPLESS_SIDES;
 let hidePanelFolds = true;          // smooth edges when flaps are off
@@ -552,7 +552,8 @@ function drawStripTexture(ctx, img, MM_I) {
       const d00=bilerp(q.BL,q.BR,q.TL,q.TR,u0,v0), d10=bilerp(q.BL,q.BR,q.TL,q.TR,u1,v0);
       const d01=bilerp(q.BL,q.BR,q.TL,q.TR,u0,v1), d11=bilerp(q.BL,q.BR,q.TL,q.TR,u1,v1);
       // source rect (panel's U slice; V flipped so image sits upright with base at bottom)
-      const sxa=lerp(q.u0*iw, q.u1*iw, u0), sxb=lerp(q.u0*iw, q.u1*iw, u1);
+      // U flipped left-right (iw - x) so the strip reads the correct way around
+      const sxa=iw - lerp(q.u0*iw, q.u1*iw, u0), sxb=iw - lerp(q.u0*iw, q.u1*iw, u1);
       const sya=(1-v0)*ih, syb=(1-v1)*ih;
       textureTriangle(ctx,img, sxa,sya, sxb,sya, sxb,syb, d00[0],d00[1], d10[0],d10[1], d11[0],d11[1]);
       textureTriangle(ctx,img, sxa,sya, sxb,syb, sxa,syb, d00[0],d00[1], d11[0],d11[1], d01[0],d01[1]);
