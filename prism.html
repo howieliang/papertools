@@ -115,6 +115,11 @@
   </div>
 
   <hr>
+  <div><h3>Side panel position (mm)</h3></div>
+  <div class="off-row"><span class="k">X</span><input type="range" id="stripOffX" min="-150" max="150" value="0" step="1"><span class="v" id="stripOffXVal">0</span></div>
+  <div class="off-row"><span class="k">Y</span><input type="range" id="stripOffY" min="-150" max="150" value="0" step="1"><span class="v" id="stripOffYVal">0</span></div>
+
+  <hr>
   <div><h3>Textures</h3></div>
   <div class="field">
     <label>Side strip image</label>
@@ -198,6 +203,9 @@ let stripImg = null, topImg = null, botImg = null;
 
 // Per-lid position offsets (mm) — adjust each surface's location on the plan.
 let topOffX = 0, topOffY = 0, botOffX = 0, botOffY = 0;
+
+// Side-panel strip position offset (mm) — moves the strip (lines + texture) only.
+let stripOffX = 0, stripOffY = 0;
 
 // Derived params (populated by computeParams)
 const P = {};
@@ -472,10 +480,13 @@ function buildPlan(MM_I) {
   g.save();
   g.translate(PAT_X * MM_I, PAT_Y * MM_I);        // page padding (Processing patX/patY)
 
-  // Side panel strip
+  // Side panel strip (its own position offset; does not move the lids)
+  g.save();
+  g.translate(stripOffX * MM_I, stripOffY * MM_I);
   drawFoldLines(g);
   drawTabsFlaps(g, true,  false, true);           // bottom tabs + seam flaps
   drawTabsFlaps(g, false, true,  false);          // top tabs
+  g.restore();
 
   // Lids, below the strip
   const lidSpacing = stripHeight() * LID_SPACING_MARGIN;
@@ -533,6 +544,7 @@ function collectStripQuads(MM_I) {
   const rot=rotationNeeded(top,bot,h);
   const g=new Gfx();
   g.translate(PAT_X*MM_I, PAT_Y*MM_I);
+  g.translate(stripOffX*MM_I, stripOffY*MM_I);    // match the strip's position offset
   const quads=[];
   for (let c=0;c<n;c++){
     quads.push({ BL:g._p(0,0), BR:g._p(bot,0), TR:g._p(off+top,h), TL:g._p(off,h),
@@ -787,6 +799,8 @@ function bind() {
   offset('topOffY', 'topOffYVal', v => topOffY = v);
   offset('botOffX', 'botOffXVal', v => botOffX = v);
   offset('botOffY', 'botOffYVal', v => botOffY = v);
+  offset('stripOffX', 'stripOffXVal', v => stripOffX = v);
+  offset('stripOffY', 'stripOffYVal', v => stripOffY = v);
 
   // texture image loading
   function loadTexture(inputId, assign) {
