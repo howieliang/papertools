@@ -1,0 +1,832 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>PaperPhicons – Prism / Frustum Cut &amp; Fold</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { display: flex; flex-direction: column; height: 100vh; background: #555;
+         font-family: Arial, sans-serif; font-size: 13px; color: #fff; }
+  #app { flex: 1; display: flex; min-height: 0; }
+
+  #sidebar {
+    width: 210px; flex-shrink: 0;
+    background: #222; padding: 12px 10px;
+    overflow-y: auto; display: flex; flex-direction: column; gap: 10px;
+  }
+  #sidebar h3 { font-size: 12px; text-transform: uppercase; color: #aaa; margin-bottom: 2px; }
+  .field { display: flex; flex-direction: column; gap: 2px; }
+  .field.row2 { flex-direction: row; gap: 6px; align-items: flex-end; }
+  .field.row2 > div { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+  .field label { font-size: 11px; color: #aaa; }
+  .field input[type=number], .field input[type=text] {
+    width: 100%; padding: 3px 5px; background: #333; border: 1px solid #555;
+    color: #fff; border-radius: 3px; font-size: 13px;
+  }
+  .field input:disabled { opacity: .45; }
+  .field input[type=file] { font-size: 10px; color: #ccc; }
+  .field input[type=file]::file-selector-button {
+    background: #444; color: #fff; border: 1px solid #666; border-radius: 3px;
+    padding: 2px 6px; margin-right: 6px; cursor: pointer; font-size: 10px;
+  }
+  .toggle-row { display: flex; align-items: center; gap: 6px; }
+  .toggle-row label { font-size: 12px; color: #ddd; }
+
+  button {
+    width: 100%; padding: 6px; border: none; border-radius: 3px;
+    cursor: pointer; font-size: 12px; font-weight: bold;
+  }
+  #btnExportSVG { background: #2a6; color: #fff; } #btnExportSVG:hover { background: #3b7; }
+  #btnExportCalib { background: #5a2; color: #fff; } #btnExportCalib:hover { background: #6b3; }
+  #btnPrint { background: #37a; color: #fff; } #btnPrint:hover { background: #48b; }
+
+  #status { font-size: 10px; color: #8a8; min-height: 14px; }
+
+  #canvas-wrap { flex: 1; overflow: auto; display: flex; align-items: flex-start;
+                 justify-content: flex-start; padding: 10px; }
+  canvas { display: block; background: #888; }
+
+  .legend { font-size: 10px; display: flex; flex-direction: column; gap: 3px; }
+  .legend-item { display: flex; align-items: center; gap: 5px; }
+  .swatch { width: 24px; height: 0; display: inline-block; }
+  .swatch.cut  { border-top: 2px solid #cc2222; }
+  .swatch.fold { border-top: 2px dashed #3355cc; }
+
+  #zoom-row { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #aaa; }
+  #zoom-row input { flex: 1; }
+  .off-row { display: flex; align-items: center; gap: 5px; font-size: 10px; color: #aaa; margin-left: 22px; }
+  .off-row input[type=range] { flex: 1; }
+  .off-row .k { width: 10px; } .off-row .v { width: 34px; text-align: right; }
+  hr { border: none; border-top: 1px solid #444; }
+</style>
+</head>
+<body>
+<div id="app">
+<div id="sidebar">
+  <div><h3>Shape parameters (mm)</h3></div>
+
+  <div class="field">
+    <label>Height</label>
+    <input type="number" id="height" value="50" min="1" max="100" step="0.5">
+  </div>
+
+  <div class="field row2">
+    <div>
+      <label>Top diameter</label>
+      <input type="number" id="topD" value="40" min="1" max="70" step="0.5">
+    </div>
+    <div>
+      <label>Bottom diameter</label>
+      <input type="number" id="botD" value="40" min="1" max="70" step="0.5">
+    </div>
+  </div>
+  <div class="toggle-row">
+    <input type="checkbox" id="lock" checked>
+    <label for="lock">Lock top = bottom</label>
+  </div>
+
+  <hr>
+  <div class="toggle-row">
+    <input type="checkbox" id="drawFlaps">
+    <label for="drawFlaps">Draw flaps</label>
+  </div>
+  <div class="field" id="sidesRow" style="display:none">
+    <label>Number of sides (3–12)</label>
+    <input type="number" id="sides" value="6" min="3" max="12" step="1">
+  </div>
+
+  <hr>
+  <div><h3>Surfaces</h3></div>
+  <div class="toggle-row">
+    <input type="checkbox" id="showTop">
+    <label for="showTop">Show top surface</label>
+  </div>
+  <div id="topOffRow" style="display:none">
+    <div class="off-row"><span class="k">X</span><input type="range" id="topOffX" min="-150" max="150" value="0" step="1"><span class="v" id="topOffXVal">0</span></div>
+    <div class="off-row"><span class="k">Y</span><input type="range" id="topOffY" min="-150" max="150" value="0" step="1"><span class="v" id="topOffYVal">0</span></div>
+  </div>
+  <div class="toggle-row">
+    <input type="checkbox" id="showBot">
+    <label for="showBot">Show bottom surface</label>
+  </div>
+  <div id="botOffRow" style="display:none">
+    <div class="off-row"><span class="k">X</span><input type="range" id="botOffX" min="-150" max="150" value="0" step="1"><span class="v" id="botOffXVal">0</span></div>
+    <div class="off-row"><span class="k">Y</span><input type="range" id="botOffY" min="-150" max="150" value="0" step="1"><span class="v" id="botOffYVal">0</span></div>
+  </div>
+
+  <hr>
+  <div><h3>Textures</h3></div>
+  <div class="field">
+    <label>Side strip image</label>
+    <input type="file" id="stripFile" accept="image/*">
+  </div>
+  <div class="field" id="topTexRow" style="display:none">
+    <label>Top surface image</label>
+    <input type="file" id="topFile" accept="image/*">
+  </div>
+  <div class="field" id="botTexRow" style="display:none">
+    <label>Bottom surface image</label>
+    <input type="file" id="botFile" accept="image/*">
+  </div>
+  <button id="btnClearTex" style="background:#a44;color:#fff">Clear textures</button>
+
+  <hr>
+  <div><h3>View</h3></div>
+  <div id="zoom-row">
+    <span>Zoom</span>
+    <input type="range" id="zoom" min="20" max="200" value="100" step="5">
+    <span id="zoomVal">100%</span>
+  </div>
+
+  <hr>
+  <div><h3>Export</h3></div>
+  <div class="field">
+    <label>File name</label>
+    <input type="text" id="filename" value="prism">
+  </div>
+  <button id="btnExportSVG">Export cut SVG</button>
+  <button id="btnExportCalib">Export calib SVG</button>
+  <button id="btnPrint">Save PDF</button>
+  <div id="status"></div>
+
+  <div><h3>Legend</h3></div>
+  <div class="legend">
+    <div class="legend-item"><span class="swatch cut"></span>Cut line</div>
+    <div class="legend-item"><span class="swatch fold"></span>Fold line</div>
+  </div>
+</div>
+
+<div id="canvas-wrap">
+  <canvas id="mainCanvas"></canvas>
+</div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script>
+"use strict";
+// ============================================================================
+//  Constants  (ported from Param.pde)
+// ============================================================================
+const MM        = 2.8346;               // px/mm at 72 DPI (print)
+const MM_V       = MM * (96 / 72);       // px/mm at 96 DPI (vinyl)
+const PRINT_W   = 297, PRINT_H = 210;   // A4 landscape, mm
+const VINYL_W   = 280, VINYL_H = 200;   // vinyl page, mm
+
+// Fixed geometry (mm) — mirror Param.pde
+const FLAP_DEPTH = 5, FLAP_TAPER = 5, TAB_DEPTH = 10, HOOK_OFFSET = -1;
+const DASH = 3, GAP = 3, PAT_X = 10, PAT_Y = 20;
+const TAB_NECK_RATIO = 0.8, TAB_NECK_RATIO_HOOK = 0.2;
+const TAB_DEPTH_FRACTION = 0.2, LID_SPACING_MARGIN = 1.25;
+const FLAPLESS_SIDES = 60;
+
+const TWO_PI = Math.PI * 2, HALF_PI = Math.PI / 2;
+
+// ============================================================================
+//  State
+// ============================================================================
+let uiHeight = 50, uiTopW = 40, uiBotW = 40;
+let lockEqual = true;
+let showFlaps = false;
+let nSides = FLAPLESS_SIDES;
+let hidePanelFolds = true;          // smooth edges when flaps are off
+let showTopSurface = false, showBottomSurface = false;
+let savedSides = 6, savedHide = false;
+let zoomPct = 100;
+
+// Textures (Image objects, or null). Rendered on canvas/print only, never in the cut SVG.
+let stripImg = null, topImg = null, botImg = null;
+
+// Per-lid position offsets (mm) — adjust each surface's location on the plan.
+let topOffX = 0, topOffY = 0, botOffX = 0, botOffY = 0;
+
+// Derived params (populated by computeParams)
+const P = {};
+
+function computeParams(MM_I) {
+  const n = Math.max(3, nSides);
+  const chord = Math.sin(Math.PI / n);       // D * sin(pi/n) gives chord (cell) length
+  P.n         = n;
+  P.cellTopL  = uiTopW * chord * MM_I;
+  P.cellBaseL = uiBotW * chord * MM_I;
+  P.cylH      = uiHeight * MM_I;
+
+  // When flaps are off, only the left seam flap draws — keep a full 5 mm depth
+  // regardless of side count. When flaps are on, clamp to the panel width so
+  // the tabs/flaps still fit.
+  P.flapDepth = showFlaps ? Math.min(FLAP_DEPTH * MM_I, P.cellTopL, P.cellBaseL)
+                          : FLAP_DEPTH * MM_I;
+  P.flapTaper = Math.min(FLAP_TAPER * MM_I, P.cylH * 0.33);
+  P.tabDepth  = Math.min(TAB_DEPTH  * MM_I, P.cellTopL, P.cellBaseL);
+
+  P.tabInsetH   = P.cylH / 4;
+  P.tabInsetTop = P.cellTopL / 4;
+  P.tabInsetBot = P.cellBaseL / 4;
+  P.arrowH   = P.tabInsetH   / 3;
+  P.arrowTop = P.tabInsetTop / 3;
+  P.arrowBot = P.tabInsetBot / 3;
+
+  P.neck     = P.tabDepth * TAB_NECK_RATIO;
+  P.neckHook = P.tabDepth * TAB_NECK_RATIO_HOOK;
+  P.hookOff  = HOOK_OFFSET * MM_I;
+  P.dash = DASH * MM_I;
+  P.gap  = GAP  * MM_I;
+  P.lidNeck = P.tabDepth * TAB_DEPTH_FRACTION;
+}
+
+// ============================================================================
+//  Gfx : transform-stack recorder (mirrors Processing's matrix + drawing)
+//  Records absolute-space line segments so canvas + SVG share one geometry pass.
+// ============================================================================
+function matMul(m, n) {   // canvas order [a,b,c,d,e,f]; result = m * n
+  return [
+    m[0]*n[0] + m[2]*n[1],        m[1]*n[0] + m[3]*n[1],
+    m[0]*n[2] + m[2]*n[3],        m[1]*n[2] + m[3]*n[3],
+    m[0]*n[4] + m[2]*n[5] + m[4], m[1]*n[4] + m[3]*n[5] + m[5],
+  ];
+}
+class Gfx {
+  constructor() { this.ctm = [1,0,0,1,0,0]; this.stack = []; this.segs = []; }
+  save()    { this.stack.push(this.ctm.slice()); }
+  restore() { this.ctm = this.stack.pop(); }
+  translate(x, y) { this.ctm = matMul(this.ctm, [1,0,0,1,x,y]); }
+  rotate(a) { const c = Math.cos(a), s = Math.sin(a); this.ctm = matMul(this.ctm, [c,s,-s,c,0,0]); }
+  _p(x, y) { const m = this.ctm; return [m[0]*x + m[2]*y + m[4], m[1]*x + m[3]*y + m[5]]; }
+  _seg(x1,y1,x2,y2,dashed) {
+    const a = this._p(x1,y1), b = this._p(x2,y2);
+    this.segs.push({ x1:a[0], y1:a[1], x2:b[0], y2:b[1], dashed });
+  }
+  line(x1,y1,x2,y2)       { this._seg(x1,y1,x2,y2,false); }
+  dashedLine(x1,y1,x2,y2) { this._seg(x1,y1,x2,y2,true); }
+  poly(pts) { for (let i = 0; i < pts.length - 1; i++)
+                this.line(pts[i][0], pts[i][1], pts[i+1][0], pts[i+1][1]); }
+}
+
+// tiny 2D vector helpers (for the slant flaps)
+const V  = (x,y) => ({x,y});
+const sub = (a,b) => V(a.x-b.x, a.y-b.y);
+const add = (a,b) => V(a.x+b.x, a.y+b.y);
+const mul = (a,s) => V(a.x*s, a.y*s);
+const mag = a => Math.hypot(a.x, a.y);
+const norm = a => { const m = mag(a) || 1; return V(a.x/m, a.y/m); };
+
+// ============================================================================
+//  Tab / flap contours  (ported from api.pde)
+// ============================================================================
+function drawBottomTabContour(g, p, d, tabDepth, tabInset, arrow) {
+  g.dashedLine(p.x + d.x, p.y + d.y, p.x + tabInset*2, p.y + d.y);
+  const neck = tabDepth * TAB_NECK_RATIO;
+  g.poly([
+    [p.x + d.x, p.y + d.y],
+    [p.x + d.x, p.y + d.y - neck],
+    [p.x + d.x - arrow, p.y + d.y - tabDepth],
+    [p.x + tabInset*2 + arrow, p.y + d.y - tabDepth],
+    [p.x + tabInset*2, p.y + d.y - neck],
+    [p.x + tabInset*2, p.y + d.y],
+    [p.x, p.y + d.y],
+  ]);
+}
+function drawTopTabContour(g, p, d, tabDepth, tabInset, arrow) {
+  g.dashedLine(p.x, p.y, p.x + d.x - tabInset*2, p.y);
+  const neck = tabDepth * TAB_NECK_RATIO;
+  g.poly([
+    [p.x, p.y],
+    [p.x, p.y + neck],
+    [p.x + arrow, p.y + tabDepth],
+    [p.x + d.x - tabInset*2 - arrow, p.y + tabDepth],
+    [p.x + d.x - tabInset*2, p.y + neck],
+    [p.x + d.x - tabInset*2, p.y],
+    [p.x + d.x, p.y],
+  ]);
+}
+function drawLeftSlantFlap(g, p1, p4, flapDepth, taper, inset) {
+  const leftEdge = sub(p1, p4);
+  let leftPerp = mul(norm(V(leftEdge.y, -leftEdge.x)), flapDepth);
+  const insetEdge = norm(sub(p1, p4));
+  const p1ei = sub(p1, mul(insetEdge, inset));
+  const p4ei = add(p4, mul(insetEdge, inset));
+  const p1r = add(p1, leftPerp), p4r = add(p4, leftPerp);
+  const outer = norm(sub(p1r, p4r));
+  const p1f = sub(p1r, mul(outer, taper));
+  const p4f = add(p4r, mul(outer, taper));
+  if (showFlaps) {
+    // dashed fold near the corners + solid attach edge in the middle
+    g.dashedLine(p4.x, p4.y, p4ei.x, p4ei.y);
+    g.line(p4ei.x, p4ei.y, p1ei.x, p1ei.y);
+    g.dashedLine(p1ei.x, p1ei.y, p1.x, p1.y);
+  } else {
+    // flaps off: one continuous dashed fold line along the whole shared edge
+    g.dashedLine(p4.x, p4.y, p1.x, p1.y);
+  }
+  g.poly([[p4.x,p4.y],[p4f.x,p4f.y],[p1f.x,p1f.y],[p1.x,p1.y]]);
+}
+function drawRightSlantFlap(g, p2, p3, flapDepth, inset, arrow, neckDepth, hookOffset) {
+  const rEdge = norm(sub(p3, p2));
+  const p2ei = add(p2, mul(rEdge, inset));
+  const p3ei = sub(p3, mul(rEdge, inset));
+  const insetEdge = sub(p3ei, p2ei);
+  const perpN = norm(V(insetEdge.y, -insetEdge.x));
+  const perp = mul(perpN, flapDepth);
+  const p2r = add(p2ei, perp), p3r = add(p3ei, perp);
+  const neckV = mul(perpN, neckDepth);
+  const p2nk = add(p2ei, neckV), p3nk = add(p3ei, neckV);
+  const outerNeck = sub(p3nk, p2nk); const onMag = mag(outerNeck) || 1;
+  const onN = norm(outerNeck); const hookMag = onMag * (hookOffset / onMag);
+  const p2h = add(p2nk, mul(onN, hookMag));
+  const p3h = sub(p3nk, mul(onN, hookMag));
+  const outerR = sub(p3r, p2r); const orMag = mag(outerR) || 1;
+  const orN = norm(outerR); const arrMag = orMag * (arrow / orMag);
+  const p2f = add(p2r, mul(orN, arrMag));
+  const p3f = sub(p3r, mul(orN, arrMag));
+  g.dashedLine(p3ei.x, p3ei.y, p2ei.x, p2ei.y);
+  g.poly([
+    [p3.x,p3.y],[p3ei.x,p3ei.y],[p3h.x,p3h.y],
+    [p3f.x,p3f.y],[p2f.x,p2f.y],[p2h.x,p2h.y],
+    [p2ei.x,p2ei.y],[p2.x,p2.y],
+  ]);
+}
+
+// ============================================================================
+//  Side-panel strip  (ported from tools.pde: drawTzFoldlines / drawTzTopFolds)
+//  Uniform mode only (m = 1, n = nSides).
+// ============================================================================
+function rotationNeeded(topLen, botLen, h) {
+  const Ar = V((topLen - botLen) / 2, h);
+  const Bl = V((botLen - topLen) / 2, h);
+  return Math.atan2(Ar.y, Ar.x) - Math.atan2(Bl.y, Bl.x);
+}
+
+function drawFoldLines(g) {
+  if (hidePanelFolds) return;               // internal panel folds hidden when off
+  const n = P.n, top = P.cellTopL, bot = P.cellBaseL, h = P.cylH;
+  const rot = rotationNeeded(top, bot, h);
+  g.save();
+  for (let c = 0; c < n; c++) {
+    if (c < n - 1) g.dashedLine(bot, 0, (bot - top) / 2 + top, h);
+    if (c < n - 1) { g.translate(bot, 0); g.rotate(rot); }
+  }
+  g.restore();
+}
+
+// pass1: bottom tabs + left/right seam flaps ; pass2: top tabs
+function drawTabsFlaps(g, doBottom, doTop, doFlaps) {
+  const n = P.n, top = P.cellTopL, bot = P.cellBaseL, h = P.cylH;
+  const off = (bot - top) / 2;
+  const rot = rotationNeeded(top, bot, h);
+  g.save();
+  for (let c = 0; c < n; c++) {
+    const pb = V(0, 0),   db = V(bot, 0);
+    const pt = V(off, h), dt = V(top, 0);
+    if (doBottom) {
+      if (showFlaps) drawBottomTabContour(g, pb, db, P.tabDepth, P.tabInsetBot, P.arrowBot);
+      else g.line(pb.x, pb.y + db.y, pb.x + db.x, pb.y + db.y);
+    }
+    if (doTop) {
+      if (showFlaps) drawTopTabContour(g, pt, dt, P.tabDepth, P.tabInsetTop, P.arrowTop);
+      else g.line(pt.x, pt.y + dt.y, pt.x + dt.x, pt.y + dt.y);
+    }
+    if (doFlaps) {
+      // Left seam flap is always drawn, even when flaps are off.
+      if (c === 0) drawLeftSlantFlap(g, pb, pt, P.flapDepth, P.flapTaper, P.tabInsetH);
+      // Right side: slant flap when flaps on, plain contour edge when off.
+      if (c === n - 1) {
+        if (showFlaps) drawRightSlantFlap(g, add(pb, db), add(pt, dt),
+                              P.flapDepth, P.tabInsetH, P.arrowH, P.neckHook, P.hookOff);
+        else           g.line(pb.x + db.x, pb.y + db.y, pt.x + dt.x, pt.y + dt.y);
+      }
+    }
+    if (c < n - 1) { g.translate(bot, 0); g.rotate(rot); }
+  }
+  g.restore();
+}
+
+function stripHeight() {
+  const n = P.n, h = P.cylH, t = P.cellTopL, b = P.cellBaseL;
+  const rot = rotationNeeded(t, b, h);
+  const g = new Gfx();
+  let maxY = h;
+  const probe = () => {
+    [[0,0],[b,0],[(b-t)/2,h],[(b-t)/2+t,h]].forEach(([x,y]) => { maxY = Math.max(maxY, g._p(x,y)[1]); });
+  };
+  probe();
+  for (let e = 0; e < n - 1; e++) { g.translate(b, 0); g.rotate(rot); probe(); }
+  return maxY;
+}
+
+// ============================================================================
+//  Lids  (ported from api.pde: drawPolygonLid / getPolygonLidDimensions)
+// ============================================================================
+function polygonLidDims(numSides, sideLen, tabDepth) {
+  const radius = (sideLen / 2) / Math.sin(Math.PI / numSides);
+  const inc = TWO_PI / numSides, start = -HALF_PI - inc / 2;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (let i = 0; i < numSides; i++) {
+    const a = start + i * inc, vx = Math.cos(a) * radius, vy = Math.sin(a) * radius;
+    minX = Math.min(minX, vx); maxX = Math.max(maxX, vx);
+    minY = Math.min(minY, vy); maxY = Math.max(maxY, vy);
+  }
+  return { x: (maxX - minX) + 2 * tabDepth, y: (maxY - minY) + 2 * tabDepth };
+}
+
+function drawPolygonLid(g, numSides, sideLen, lidNeck, tabInset, arrow) {
+  const radius = (sideLen / 2) / Math.sin(Math.PI / numSides);
+  const inc = TWO_PI / numSides;
+  const rectW = (radius * Math.cos(inc / 2) + P.tabDepth) * 2;
+  g.save();
+  g.translate(rectW / 2, rectW / 2);
+  const midShift = radius * Math.cos(inc / 2);
+  if (showFlaps) {
+    for (let i = 0; i < numSides; i++) {          // dashed fold at each edge
+      g.save(); g.rotate(i * inc); g.translate(0, -midShift);
+      g.dashedLine(-sideLen/2 + tabInset*2, 0, sideLen/2, 0);
+      g.restore();
+    }
+    for (let i = 0; i < numSides; i++) {          // glue tab at each edge
+      g.save(); g.rotate(i * inc); g.translate(0, -midShift);
+      g.poly([
+        [-sideLen/2, 0],
+        [-sideLen/2 + tabInset*2, 0],
+        [-sideLen/2 + tabInset*2, -lidNeck],
+        [-sideLen/2 + tabInset*2 + arrow, -P.tabDepth],
+        [ sideLen/2 - arrow, -P.tabDepth],
+        [ sideLen/2, -lidNeck],
+        [ sideLen/2, 0],
+      ]);
+      g.restore();
+    }
+  } else {
+    for (let i = 0; i < numSides; i++) {          // plain contour edge
+      g.save(); g.rotate(i * inc); g.translate(0, -midShift);
+      g.line(-sideLen/2, 0, sideLen/2, 0);
+      g.restore();
+    }
+  }
+  g.restore();
+}
+
+// ============================================================================
+//  Build the whole plan into segments  (mirrors drawPlan, uniform branch)
+// ============================================================================
+function buildPlan(MM_I) {
+  computeParams(MM_I);
+  const g = new Gfx();
+  g.save();
+  g.translate(PAT_X * MM_I, PAT_Y * MM_I);        // page padding (Processing patX/patY)
+
+  // Side panel strip
+  drawFoldLines(g);
+  drawTabsFlaps(g, true,  false, true);           // bottom tabs + seam flaps
+  drawTabsFlaps(g, false, true,  false);          // top tabs
+
+  // Lids, below the strip
+  const lidSpacing = stripHeight() * LID_SPACING_MARGIN;
+  g.save();
+  g.translate(0, lidSpacing);
+  const lidBase = polygonLidDims(P.n, P.cellBaseL, P.tabDepth);
+  const lidTop  = polygonLidDims(P.n, P.cellTopL,  P.tabDepth);
+  if (showBottomSurface) {
+    g.save(); g.translate(botOffX * MM_I, botOffY * MM_I);
+    drawPolygonLid(g, P.n, P.cellBaseL, P.lidNeck, P.tabInsetBot, P.arrowBot);
+    g.restore();
+  }
+  g.translate(lidBase.x, lidBase.y - lidTop.y);
+  if (showTopSurface) {
+    g.save(); g.translate(topOffX * MM_I, topOffY * MM_I);
+    drawPolygonLid(g, P.n, P.cellTopL,  P.lidNeck, P.tabInsetTop, P.arrowTop);
+    g.restore();
+  }
+  g.restore();
+
+  g.restore();
+  return g.segs;
+}
+
+// ============================================================================
+//  Textures  (canvas/print only — mirrors the tessellated strip + lid mapping)
+// ============================================================================
+// Affine-map a source triangle of `img` onto a destination triangle, clipped.
+function textureTriangle(ctx, img, sx0,sy0,sx1,sy1,sx2,sy2, dx0,dy0,dx1,dy1,dx2,dy2) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(dx0,dy0); ctx.lineTo(dx1,dy1); ctx.lineTo(dx2,dy2); ctx.closePath();
+  ctx.clip();
+  const sx1b=sx1-sx0, sy1b=sy1-sy0, sx2b=sx2-sx0, sy2b=sy2-sy0;
+  const det = sx1b*sy2b - sx2b*sy1b;
+  if (Math.abs(det) > 1e-9) {
+    const dx1b=dx1-dx0, dy1b=dy1-dy0, dx2b=dx2-dx0, dy2b=dy2-dy0;
+    const a=(dx1b*sy2b - dx2b*sy1b)/det, b=(dy1b*sy2b - dy2b*sy1b)/det;
+    const c=(dx2b*sx1b - dx1b*sx2b)/det, d=(dy2b*sx1b - dy1b*sx2b)/det;
+    const e=dx0 - a*sx0 - c*sy0, f=dy0 - b*sx0 - d*sy0;
+    ctx.transform(a,b,c,d,e,f);
+    ctx.drawImage(img, 0, 0);
+  }
+  ctx.restore();
+}
+const lerp = (a,b,t) => a + (b - a) * t;
+const bilerp = (BL,BR,TL,TR,u,v) => [
+  lerp(lerp(BL[0],BR[0],u), lerp(TL[0],TR[0],u), v),
+  lerp(lerp(BL[1],BR[1],u), lerp(TL[1],TR[1],u), v),
+];
+
+// Absolute-space panel quads (mirrors the drawTabsFlaps panel loop) + U slices.
+function collectStripQuads(MM_I) {
+  const n=P.n, top=P.cellTopL, bot=P.cellBaseL, h=P.cylH, off=(bot-top)/2;
+  const rot=rotationNeeded(top,bot,h);
+  const g=new Gfx();
+  g.translate(PAT_X*MM_I, PAT_Y*MM_I);
+  const quads=[];
+  for (let c=0;c<n;c++){
+    quads.push({ BL:g._p(0,0), BR:g._p(bot,0), TR:g._p(off+top,h), TL:g._p(off,h),
+                 u0:c/n, u1:(c+1)/n });
+    if (c<n-1){ g.translate(bot,0); g.rotate(rot); }
+  }
+  return quads;
+}
+function drawStripTexture(ctx, img, MM_I) {
+  const quads = collectStripQuads(MM_I);
+  const iw=img.width, ih=img.height;
+  const dens = (Math.abs(P.cellTopL - P.cellBaseL) < 0.01) ? 1 : 4;  // rectangles need no subdivision
+  for (const q of quads) {
+    for (let r=0;r<dens;r++) for (let cc=0;cc<dens;cc++) {
+      const u0=cc/dens, u1=(cc+1)/dens, v0=r/dens, v1=(r+1)/dens;
+      // dest corners (bilinear over the trapezoid; v: 0=base edge, 1=top edge)
+      const d00=bilerp(q.BL,q.BR,q.TL,q.TR,u0,v0), d10=bilerp(q.BL,q.BR,q.TL,q.TR,u1,v0);
+      const d01=bilerp(q.BL,q.BR,q.TL,q.TR,u0,v1), d11=bilerp(q.BL,q.BR,q.TL,q.TR,u1,v1);
+      // source rect (panel's U slice; V flipped so image sits upright with base at bottom)
+      const sxa=lerp(q.u0*iw, q.u1*iw, u0), sxb=lerp(q.u0*iw, q.u1*iw, u1);
+      const sya=(1-v0)*ih, syb=(1-v1)*ih;
+      textureTriangle(ctx,img, sxa,sya, sxb,sya, sxb,syb, d00[0],d00[1], d10[0],d10[1], d11[0],d11[1]);
+      textureTriangle(ctx,img, sxa,sya, sxb,syb, sxa,syb, d00[0],d00[1], d11[0],d11[1], d01[0],d01[1]);
+    }
+  }
+}
+
+// Absolute-space lid face {center, verts[]} (mirrors buildPlan lid placement).
+function lidFace(g, numSides, sideLen) {
+  const radius=(sideLen/2)/Math.sin(Math.PI/numSides), inc=TWO_PI/numSides;
+  const rectW=(radius*Math.cos(inc/2)+P.tabDepth)*2, start=-HALF_PI-inc/2;
+  g.save(); g.translate(rectW/2, rectW/2);
+  const center=g._p(0,0), verts=[];
+  for (let i=0;i<numSides;i++){ const a=start+i*inc; verts.push(g._p(radius*Math.cos(a), radius*Math.sin(a))); }
+  g.restore();
+  return {center, verts};
+}
+function collectLids(MM_I) {
+  const g=new Gfx();
+  g.translate(PAT_X*MM_I, PAT_Y*MM_I);
+  g.translate(0, stripHeight()*LID_SPACING_MARGIN);
+  const lidBase=polygonLidDims(P.n,P.cellBaseL,P.tabDepth);
+  const lidTop =polygonLidDims(P.n,P.cellTopL, P.tabDepth);
+  let bottom=null, top=null;
+  if (showBottomSurface) { g.save(); g.translate(botOffX*MM_I, botOffY*MM_I); bottom=lidFace(g, P.n, P.cellBaseL); g.restore(); }
+  g.translate(lidBase.x, lidBase.y - lidTop.y);
+  if (showTopSurface)    { g.save(); g.translate(topOffX*MM_I, topOffY*MM_I); top=lidFace(g, P.n, P.cellTopL); g.restore(); }
+  return {bottom, top};
+}
+function drawLidTexture(ctx, img, face, numSides) {
+  const inc=TWO_PI/numSides, start=-HALF_PI-inc/2;
+  const cx=img.width/2, cy=img.height/2, R=Math.min(img.width,img.height)/2;
+  for (let i=0;i<numSides;i++){
+    const j=(i+1)%numSides, a0=start+i*inc, a1=start+j*inc;
+    const v0=face.verts[i], v1=face.verts[j], c=face.center;
+    textureTriangle(ctx,img,
+      cx,cy, cx+R*Math.cos(a0),cy+R*Math.sin(a0), cx+R*Math.cos(a1),cy+R*Math.sin(a1),
+      c[0],c[1], v0[0],v0[1], v1[0],v1[1]);
+  }
+}
+
+function drawTextures(ctx, MM_I) {
+  if (stripImg) drawStripTexture(ctx, stripImg, MM_I);
+  if ((showTopSurface && topImg) || (showBottomSurface && botImg)) {
+    const lids = collectLids(MM_I);
+    if (botImg && lids.bottom) drawLidTexture(ctx, botImg, lids.bottom, P.n);
+    if (topImg && lids.top)    drawLidTexture(ctx, topImg, lids.top,    P.n);
+  }
+}
+
+// ============================================================================
+//  Canvas render
+// ============================================================================
+// Registration crosses at 10 mm inside the vinyl page bounds (280×200), arms ±2 mm.
+// Mirrors Processing's drawCalibCrosses() (print DPI, at the page origin).
+function drawCalibCrossesCanvas(ctx) {
+  const w = VINYL_W * MM, h = VINYL_H * MM, a = 5 * MM, d = 10 * MM;
+  ctx.save();
+  ctx.setLineDash([]);
+  ctx.strokeStyle = '#000';
+  ctx.beginPath();
+  const cross = (cx, cy) => {
+    ctx.moveTo(cx, cy - a); ctx.lineTo(cx, cy + a);
+    ctx.moveTo(cx - a, cy); ctx.lineTo(cx + a, cy);
+  };
+  cross(d, d); cross(w - d, d); cross(d, h - d); cross(w - d, h - d);
+  ctx.stroke();
+  ctx.restore();
+}
+
+// Draw the plan art (textures + calib crosses + fold/cut lines) into `ctx`,
+// where `scale` maps MM-space px (built at MM) to device px.
+function drawArt(ctx, scale) {
+  const segs = buildPlan(MM);
+  ctx.save();
+  ctx.scale(scale, scale);
+  ctx.lineWidth = 1 / scale;
+
+  drawTextures(ctx, MM);
+  drawCalibCrossesCanvas(ctx);
+
+  // fold lines (dashed, blue)
+  ctx.strokeStyle = '#3355cc';
+  ctx.setLineDash([P.dash, P.gap]);
+  ctx.beginPath();
+  for (const s of segs) if (s.dashed) { ctx.moveTo(s.x1, s.y1); ctx.lineTo(s.x2, s.y2); }
+  ctx.stroke();
+
+  // cut lines (solid, red)
+  ctx.setLineDash([]);
+  ctx.strokeStyle = '#cc2222';
+  ctx.beginPath();
+  for (const s of segs) if (!s.dashed) { ctx.moveTo(s.x1, s.y1); ctx.lineTo(s.x2, s.y2); }
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+function render() {
+  const canvas = document.getElementById('mainCanvas');
+  const ctx = canvas.getContext('2d');
+  const scale = zoomPct / 100;
+  const pageW = Math.round(PRINT_W * MM * scale);
+  const pageH = Math.round(PRINT_H * MM * scale);
+  canvas.width = pageW; canvas.height = pageH;
+
+  // page
+  ctx.fillStyle = '#888'; ctx.fillRect(0, 0, pageW, pageH);
+  ctx.fillStyle = '#fff'; ctx.strokeStyle = '#000'; ctx.lineWidth = 1;
+  ctx.fillRect(0, 0, pageW, pageH); ctx.strokeRect(0.5, 0.5, pageW - 1, pageH - 1);
+
+  drawArt(ctx, scale);
+}
+
+// Save the plan directly as a PDF (A4 landscape, 300 DPI raster of the page).
+function exportPDF() {
+  if (!(window.jspdf && window.jspdf.jsPDF)) { setStatus('PDF library not loaded.'); return; }
+  const scale = 1;                              // 72 DPI (MM space is already 72 DPI) → small file
+  const pageW = Math.round(PRINT_W * MM * scale);
+  const pageH = Math.round(PRINT_H * MM * scale);
+  const off = document.createElement('canvas');
+  off.width = pageW; off.height = pageH;
+  const ctx = off.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, pageW, pageH);
+  drawArt(ctx, scale);
+
+  const pdf = new window.jspdf.jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  pdf.addImage(off.toDataURL('image/png'), 'PNG', 0, 0, PRINT_W, PRINT_H);
+  pdf.save(`${filenameBase()}_${Date.now()}.pdf`);
+  setStatus('PDF saved.');
+}
+
+// ============================================================================
+//  SVG export  (vinyl DPI, all black — matches Processing SVG semantics)
+// ============================================================================
+function svgLine(s) {
+  const da = s.dashed ? ` stroke-dasharray="${(DASH*MM_V).toFixed(2)},${(GAP*MM_V).toFixed(2)}"` : '';
+  return `<line x1="${s.x1.toFixed(3)}" y1="${s.y1.toFixed(3)}" x2="${s.x2.toFixed(3)}" y2="${s.y2.toFixed(3)}" stroke="#000" stroke-width="0.5"${da}/>`;
+}
+function svgAnchor(x, y) {
+  return `<circle cx="${x.toFixed(3)}" cy="${y.toFixed(3)}" r="0.5" fill="#000" stroke="none"/>`;
+}
+function downloadSVG(body, name) {
+  const vW = VINYL_W * MM_V, vH = VINYL_H * MM_V;
+  const svg = [
+    `<?xml version="1.0" encoding="UTF-8"?>`,
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${VINYL_W}mm" height="${VINYL_H}mm" viewBox="0 0 ${vW.toFixed(3)} ${vH.toFixed(3)}">`,
+    ...body, `</svg>`,
+  ].join('\n');
+  const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+  const a = document.createElement('a');
+  a.href = url; a.download = name; a.click();
+  URL.revokeObjectURL(url);
+}
+function exportSVG() {
+  const vW = VINYL_W * MM_V, vH = VINYL_H * MM_V;
+  const segs = buildPlan(MM_V);
+  const body = [
+    svgAnchor(0,0), svgAnchor(vW,0), svgAnchor(0,vH), svgAnchor(vW,vH),
+    ...segs.map(svgLine),
+  ];
+  downloadSVG(body, `${filenameBase()}_fold_${Date.now()}.svg`);
+  setStatus('Cut SVG exported.');
+}
+function exportCalibSVG() {
+  const vW = VINYL_W * MM_V, vH = VINYL_H * MM_V, W = VINYL_W, H = VINYL_H;
+  const L = (x1,y1,x2,y2) =>
+    `<line x1="${(x1*MM_V).toFixed(3)}" y1="${(y1*MM_V).toFixed(3)}" x2="${(x2*MM_V).toFixed(3)}" y2="${(y2*MM_V).toFixed(3)}" stroke="#000" stroke-width="0.5"/>`;
+  const body = [
+    svgAnchor(0,0), svgAnchor(vW,0), svgAnchor(0,vH), svgAnchor(vW,vH),
+    L(10,5,10,15), L(5,10,15,10),
+    L(W-10,5,W-10,15), L(W-15,10,W-5,10),
+    L(10,H-15,10,H-5), L(5,H-10,15,H-10),
+    L(W-10,H-15,W-10,H-5), L(W-15,H-10,W-5,H-10),
+  ];
+  downloadSVG(body, `${filenameBase()}_calib_${Date.now()}.svg`);
+  setStatus('Calib SVG exported.');
+}
+
+// ============================================================================
+//  UI wiring
+// ============================================================================
+function setStatus(t){ document.getElementById('status').textContent = t; }
+function filenameBase(){ return (document.getElementById('filename').value || 'prism').replace(/\s+/g,'_'); }
+const $ = id => document.getElementById(id);
+
+function applyFlaps(on) {
+  showFlaps = on;
+  if (!on) { savedSides = nSides; savedHide = hidePanelFolds; nSides = FLAPLESS_SIDES; hidePanelFolds = true; }
+  else     { nSides = savedSides; hidePanelFolds = savedHide; $('sides').value = nSides; }
+  $('sidesRow').style.display = on ? '' : 'none';
+}
+
+function bind() {
+  $('height').addEventListener('input', e => { uiHeight = Math.max(1, +e.target.value || 1); render(); });
+  $('topD').addEventListener('input', e => {
+    uiTopW = Math.max(1, +e.target.value || 1);
+    if (lockEqual) { uiBotW = uiTopW; $('botD').value = uiBotW; }
+    render();
+  });
+  $('botD').addEventListener('input', e => { uiBotW = Math.max(1, +e.target.value || 1); render(); });
+  $('lock').addEventListener('change', e => {
+    lockEqual = e.target.checked; $('botD').disabled = lockEqual;
+    if (lockEqual) { uiBotW = uiTopW; $('botD').value = uiBotW; render(); }
+  });
+  $('drawFlaps').addEventListener('change', e => { applyFlaps(e.target.checked); render(); });
+  $('sides').addEventListener('input', e => {
+    nSides = Math.max(3, Math.min(12, Math.round(+e.target.value || 3)));
+    savedSides = nSides; render();
+  });
+  $('showTop').addEventListener('change', e => {
+    showTopSurface = e.target.checked;
+    $('topTexRow').style.display = showTopSurface ? '' : 'none';
+    $('topOffRow').style.display = showTopSurface ? '' : 'none';
+    render();
+  });
+  $('showBot').addEventListener('change', e => {
+    showBottomSurface = e.target.checked;
+    $('botTexRow').style.display = showBottomSurface ? '' : 'none';
+    $('botOffRow').style.display = showBottomSurface ? '' : 'none';
+    render();
+  });
+
+  // per-lid offset sliders
+  function offset(id, valId, setter) {
+    $(id).addEventListener('input', e => {
+      const v = +e.target.value; setter(v); $(valId).textContent = v; render();
+    });
+  }
+  offset('topOffX', 'topOffXVal', v => topOffX = v);
+  offset('topOffY', 'topOffYVal', v => topOffY = v);
+  offset('botOffX', 'botOffXVal', v => botOffX = v);
+  offset('botOffY', 'botOffYVal', v => botOffY = v);
+
+  // texture image loading
+  function loadTexture(inputId, assign) {
+    $(inputId).addEventListener('change', e => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => { assign(img); URL.revokeObjectURL(url); render(); };
+      img.src = url;
+    });
+  }
+  loadTexture('stripFile', img => stripImg = img);
+  loadTexture('topFile',   img => topImg = img);
+  loadTexture('botFile',   img => botImg = img);
+  $('btnClearTex').addEventListener('click', () => {
+    stripImg = topImg = botImg = null;
+    $('stripFile').value = $('topFile').value = $('botFile').value = '';
+    render();
+  });
+  $('zoom').addEventListener('input', e => {
+    zoomPct = +e.target.value; $('zoomVal').textContent = zoomPct + '%'; render();
+  });
+  $('btnExportSVG').addEventListener('click', exportSVG);
+  $('btnExportCalib').addEventListener('click', exportCalibSVG);
+  $('btnPrint').addEventListener('click', exportPDF);
+
+  // initial control states
+  $('botD').disabled = lockEqual;
+}
+
+bind();
+render();
+</script>
+
+<style media="print">
+  @page { size: 297mm 210mm; margin: 0; }
+  #sidebar { display: none; }
+  #canvas-wrap { padding: 0; overflow: visible; width: 297mm; height: 210mm; }
+  body, #app { background: #fff; display: block; }
+  canvas { width: 297mm !important; height: 210mm !important; display: block; }
+</style>
+</body>
+</html>

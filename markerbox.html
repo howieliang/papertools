@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>PaperPhicons – Paper Cut Cuboids</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { display: flex; height: 100vh; background: #555; font-family: Arial, sans-serif; font-size: 13px; color: #fff; }
+
+  #sidebar {
+    width: 180px; flex-shrink: 0;
+    background: #222; padding: 12px 10px;
+    overflow-y: auto; display: flex; flex-direction: column; gap: 10px;
+  }
+  #sidebar h3 { font-size: 12px; text-transform: uppercase; color: #aaa; margin-bottom: 2px; }
+  .field { display: flex; flex-direction: column; gap: 2px; }
+  .field label { font-size: 11px; color: #aaa; }
+  .field input[type=number] {
+    width: 100%; padding: 3px 5px; background: #333; border: 1px solid #555;
+    color: #fff; border-radius: 3px; font-size: 13px;
+  }
+  .field input[type=range] { width: 100%; }
+  .toggle-row { display: flex; align-items: center; gap: 6px; }
+  .toggle-row label { font-size: 11px; color: #aaa; }
+
+  button {
+    width: 100%; padding: 6px; border: none; border-radius: 3px;
+    cursor: pointer; font-size: 12px; font-weight: bold;
+  }
+  #btnExportSVG { background: #2a6; color: #fff; }
+  #btnExportSVG:hover { background: #3b7; }
+  #btnExportCalib { background: #5a2; color: #fff; }
+  #btnExportCalib:hover { background: #6b3; }
+  #btnPrint { background: #37a; color: #fff; }
+  #btnPrint:hover { background: #48b; }
+
+  #status { font-size: 10px; color: #8a8; min-height: 14px; }
+
+  #canvas-wrap {
+    flex: 1; overflow: auto; display: flex;
+    align-items: flex-start; justify-content: flex-start; padding: 10px;
+  }
+  canvas { display: block; background: #888; cursor: default; }
+
+  .legend { font-size: 10px; display: flex; flex-direction: column; gap: 3px; }
+  .legend-item { display: flex; align-items: center; gap: 5px; }
+  .swatch { width: 24px; height: 2px; display: inline-block; }
+  .swatch.cut { background: #f44; }
+  .swatch.fold-front { background: #f44; border-top: 1px dashed #f44; background: none; border-top: 2px dashed #f44; }
+  .swatch.fold-back { background: none; border-top: 2px dashed #00f; }
+
+  #zoom-row { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #aaa; }
+  #zoom-row input { flex: 1; }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <div>
+    <h3>Box (mm)</h3>
+  </div>
+  <div class="field">
+    <label>Width W</label>
+    <input type="number" id="voxelW" value="30" min="1" max="150" step="1">
+  </div>
+  <div class="field">
+    <label>Length L</label>
+    <input type="number" id="voxelL" value="30" min="1" max="150" step="1">
+  </div>
+  <div class="field">
+    <label>Height H</label>
+    <input type="number" id="voxelH" value="30" min="1" max="150" step="1">
+  </div>
+
+  <div><h3>Marker</h3></div>
+  <div class="field">
+    <label>Start ID (0–1023)</label>
+    <input type="number" id="markerId" value="48" min="0" max="1023" step="1">
+  </div>
+  <div class="field">
+    <label>Size (mm)</label>
+    <input type="number" id="markerSize" value="16" min="5" max="50" step="1">
+  </div>
+  <div class="field">
+    <label>Repeat (1–4)</label>
+    <input type="number" id="nRep" value="1" min="1" max="4" step="1">
+  </div>
+  <div class="toggle-row">
+    <input type="checkbox" id="markerPos">
+    <label for="markerPos">Marker on H face</label>
+  </div>
+
+  <div><h3>View</h3></div>
+  <div id="zoom-row">
+    <span>Zoom</span>
+    <input type="range" id="zoom" min="20" max="200" value="100" step="5">
+    <span id="zoomVal">100%</span>
+  </div>
+
+  <div><h3>Export</h3></div>
+  <button id="btnExportSVG">Export cut SVG</button>
+  <button id="btnExportCalib">Export calib SVG</button>
+  <button id="btnPrint">Print / PDF</button>
+  <div id="status"></div>
+
+  <div><h3>Legend</h3></div>
+  <div class="legend">
+    <div class="legend-item"><span class="swatch cut"></span>Cut line</div>
+    <div class="legend-item"><span class="swatch fold-front"></span>Front fold</div>
+    <div class="legend-item" style="color:#88f"><span class="swatch fold-back"></span>Back fold</div>
+  </div>
+</div>
+
+<div id="canvas-wrap">
+  <canvas id="mainCanvas"></canvas>
+</div>
+
+
+<script>
+// ─── Constants ───────────────────────────────────────────────────────────────
+const MM       = 2.8346;          // px/mm at 72 DPI
+const MM_V     = MM * (96 / 72);  // px/mm at 96 DPI (vinyl)
+const PRINT_W  = 297;             // A4 landscape mm
+const PRINT_H  = 210;
+const VINYL_W  = 280;
+const VINYL_H  = 200;
+
+// ─── ArUco data (1024 markers, each packed as 25 bits, x-major order) ────────
+// Bit layout: bit 24 = payload[0][0], bit 23 = payload[0][1], ..., bit 0 = payload[4][4]
+// Extracted from aruco1024_px.png (256×256, 32×32 grid of 8×8 tiles)
+const ARUCO_DATA = [
+  32505856,32506913,31490049,31491104,32507970,32509027,31492163,31493218,30474242,30475299,29458435,29459490,30476352,30477409,29460545,29461600,
+  32510084,32511141,31494277,31495332,32512198,32513255,31496391,31497446,30478470,30479527,29462663,29463718,30480580,30481637,29464773,29465828,
+  28442628,28443685,27426821,27427876,28444742,28445799,27428935,27429990,26411014,26412071,25395207,25396262,26413124,26414181,25397317,25398372,
+  28446848,28447905,27431041,27432096,28448962,28450019,27433155,27434210,26415234,26416291,25399427,25400482,26417344,26418401,25401537,25402592,
+  32514312,32515369,31498505,31499560,32516426,32517483,31500619,31501674,30482698,30483755,29466891,29467946,30484808,30485865,29469001,29470056,
+  32518540,32519597,31502733,31503788,32520654,32521711,31504847,31505902,30486926,30487983,29471119,29472174,30489036,30490093,29473229,29474284,
+  28451084,28452141,27435277,27436332,28453198,28454255,27437391,27438446,26419470,26420527,25403663,25404718,26421580,26422637,25405773,25406828,
+  28455304,28456361,27439497,27440552,28457418,28458475,27441611,27442666,26423690,26424747,25407883,25408938,26425800,26426857,25409993,25411048,
+  24379400,24380457,23363593,23364648,24381514,24382571,23365707,23366762,22347786,22348843,21331979,21333034,22349896,22350953,21334089,21335144,
+  24383628,24384685,23367821,23368876,24385742,24386799,23369935,23370990,22352014,22353071,21336207,21337262,22354124,22355181,21338317,21339372,
+  20316172,20317229,19300365,19301420,20318286,20319343,19302479,19303534,18284558,18285615,17268751,17269806,18286668,18287725,17270861,17271916,
+  20320392,20321449,19304585,19305640,20322506,20323563,19306699,19307754,18288778,18289835,17272971,17274026,18290888,18291945,17275081,17276136,
+  24387840,24388897,23372033,23373088,24389954,24391011,23374147,23375202,22356226,22357283,21340419,21341474,22358336,22359393,21342529,21343584,
+  24392068,24393125,23376261,23377316,24394182,24395239,23378375,23379430,22360454,22361511,21344647,21345702,22362564,22363621,21346757,21347812,
+  20324612,20325669,19308805,19309860,20326726,20327783,19310919,19311974,18292998,18294055,17277191,17278246,18295108,18296165,17279301,17280356,
+  20328832,20329889,19313025,19314080,20330946,20332003,19315139,19316194,18297218,18298275,17281411,17282466,18299328,18300385,17283521,17284576,
+  32522768,32523825,31506961,31508016,32524882,32525939,31509075,31510130,30491154,30492211,29475347,29476402,30493264,30494321,29477457,29478512,
+  32526996,32528053,31511189,31512244,32529110,32530167,31513303,31514358,30495382,30496439,29479575,29480630,30497492,30498549,29481685,29482740,
+  28459540,28460597,27443733,27444788,28461654,28462711,27445847,27446902,26427926,26428983,25412119,25413174,26430036,26431093,25414229,25415284,
+  28463760,28464817,27447953,27449008,28465874,28466931,27450067,27451122,26432146,26433203,25416339,25417394,26434256,26435313,25418449,25419504,
+  32531224,32532281,31515417,31516472,32533338,32534395,31517531,31518586,30499610,30500667,29483803,29484858,30501720,30502777,29485913,29486968,
+  32535452,32536509,31519645,31520700,32537566,32538623,31521759,31522814,30503838,30504895,29488031,29489086,30505948,30507005,29490141,29491196,
+  28467996,28469053,27452189,27453244,28470110,28471167,27454303,27455358,26436382,26437439,25420575,25421630,26438492,26439549,25422685,25423740,
+  28472216,28473273,27456409,27457464,28474330,28475387,27458523,27459578,26440602,26441659,25424795,25425850,26442712,26443769,25426905,25427960,
+  24396312,24397369,23380505,23381560,24398426,24399483,23382619,23383674,22364698,22365755,21348891,21349946,22366808,22367865,21351001,21352056,
+  24400540,24401597,23384733,23385788,24402654,24403711,23386847,23387902,22368926,22369983,21353119,21354174,22371036,22372093,21355229,21356284,
+  20333084,20334141,19317277,19318332,20335198,20336255,19319391,19320446,18301470,18302527,17285663,17286718,18303580,18304637,17287773,17288828,
+  20337304,20338361,19321497,19322552,20339418,20340475,19323611,19324666,18305690,18306747,17289883,17290938,18307800,18308857,17291993,17293048,
+  24404752,24405809,23388945,23390000,24406866,24407923,23391059,23392114,22373138,22374195,21357331,21358386,22375248,22376305,21359441,21360496,
+  24408980,24410037,23393173,23394228,24411094,24412151,23395287,23396342,22377366,22378423,21361559,21362614,22379476,22380533,21363669,21364724,
+  20341524,20342581,19325717,19326772,20343638,20344695,19327831,19328886,18309910,18310967,17294103,17295158,18312020,18313077,17296213,17297268,
+  20345744,20346801,19329937,19330992,20347858,20348915,19332051,19333106,18314130,18315187,17298323,17299378,18316240,18317297,17300433,17301488,
+  16252944,16254001,15237137,15238192,16255058,16256115,15239251,15240306,14221330,14222387,13205523,13206578,14223440,14224497,13207633,13208688,
+  16257172,16258229,15241365,15242420,16259286,16260343,15243479,15244534,14225558,14226615,13209751,13210806,14227668,14228725,13211861,13212916,
+  12189716,12190773,11173909,11174964,12191830,12192887,11176023,11177078,10158102,10159159,9142295,9143350,10160212,10161269,9144405,9145460,
+  12193936,12194993,11178129,11179184,12196050,12197107,11180243,11181298,10162322,10163379,9146515,9147570,10164432,10165489,9148625,9149680,
+  16261400,16262457,15245593,15246648,16263514,16264571,15247707,15248762,14229786,14230843,13213979,13215034,14231896,14232953,13216089,13217144,
+  16265628,16266685,15249821,15250876,16267742,16268799,15251935,15252990,14234014,14235071,13218207,13219262,14236124,14237181,13220317,13221372,
+  12198172,12199229,11182365,11183420,12200286,12201343,11184479,11185534,10166558,10167615,9150751,9151806,10168668,10169725,9152861,9153916,
+  12202392,12203449,11186585,11187640,12204506,12205563,11188699,11189754,10170778,10171835,9154971,9156026,10172888,10173945,9157081,9158136,
+  8126488,8127545,7110681,7111736,8128602,8129659,7112795,7113850,6094874,6095931,5079067,5080122,6096984,6098041,5081177,5082232,
+  8130716,8131773,7114909,7115964,8132830,8133887,7117023,7118078,6099102,6100159,5083295,5084350,6101212,6102269,5085405,5086460,
+  4063260,4064317,3047453,3048508,4065374,4066431,3049567,3050622,2031646,2032703,1015839,1016894,2033756,2034813,1017949,1019004,
+  4067480,4068537,3051673,3052728,4069594,4070651,3053787,3054842,2035866,2036923,1020059,1021114,2037976,2039033,1022169,1023224,
+  8134928,8135985,7119121,7120176,8137042,8138099,7121235,7122290,6103314,6104371,5087507,5088562,6105424,6106481,5089617,5090672,
+  8139156,8140213,7123349,7124404,8141270,8142327,7125463,7126518,6107542,6108599,5091735,5092790,6109652,6110709,5093845,5094900,
+  4071700,4072757,3055893,3056948,4073814,4074871,3058007,3059062,2040086,2041143,1024279,1025334,2042196,2043253,1026389,1027444,
+  4075920,4076977,3060113,3061168,4078034,4079091,3062227,3063282,2044306,2045363,1028499,1029554,2046416,2047473,1030609,1031664,
+  16269824,16270881,15254017,15255072,16271938,16272995,15256131,15257186,14238210,14239267,13222403,13223458,14240320,14241377,13224513,13225568,
+  16274052,16275109,15258245,15259300,16276166,16277223,15260359,15261414,14242438,14243495,13226631,13227686,14244548,14245605,13228741,13229796,
+  12206596,12207653,11190789,11191844,12208710,12209767,11192903,11193958,10174982,10176039,9159175,9160230,10177092,10178149,9161285,9162340,
+  12210816,12211873,11195009,11196064,12212930,12213987,11197123,11198178,10179202,10180259,9163395,9164450,10181312,10182369,9165505,9166560,
+  16278280,16279337,15262473,15263528,16280394,16281451,15264587,15265642,14246666,14247723,13230859,13231914,14248776,14249833,13232969,13234024,
+  16282508,16283565,15266701,15267756,16284622,16285679,15268815,15269870,14250894,14251951,13235087,13236142,14253004,14254061,13237197,13238252,
+  12215052,12216109,11199245,11200300,12217166,12218223,11201359,11202414,10183438,10184495,9167631,9168686,10185548,10186605,9169741,9170796,
+  12219272,12220329,11203465,11204520,12221386,12222443,11205579,11206634,10187658,10188715,9171851,9172906,10189768,10190825,9173961,9175016,
+  8143368,8144425,7127561,7128616,8145482,8146539,7129675,7130730,6111754,6112811,5095947,5097002,6113864,6114921,5098057,5099112,
+  8147596,8148653,7131789,7132844,8149710,8150767,7133903,7134958,6115982,6117039,5100175,5101230,6118092,6119149,5102285,5103340,
+  4080140,4081197,3064333,3065388,4082254,4083311,3066447,3067502,2048526,2049583,1032719,1033774,2050636,2051693,1034829,1035884,
+  4084360,4085417,3068553,3069608,4086474,4087531,3070667,3071722,2052746,2053803,1036939,1037994,2054856,2055913,1039049,1040104,
+  8151808,8152865,7136001,7137056,8153922,8154979,7138115,7139170,6120194,6121251,5104387,5105442,6122304,6123361,5106497,5107552,
+  8156036,8157093,7140229,7141284,8158150,8159207,7142343,7143398,6124422,6125479,5108615,5109670,6126532,6127589,5110725,5111780,
+  4088580,4089637,3072773,3073828,4090694,4091751,3074887,3075942,2056966,2058023,1041159,1042214,2059076,2060133,1043269,1044324,
+  4092800,4093857,3076993,3078048,4094914,4095971,3079107,3080162,2061186,2062243,1045379,1046434,2063296,2064353,1047489,1048544,
+];
+
+// ─── State ────────────────────────────────────────────────────────────────────
+let voxelW = 30, voxelL = 30, voxelH = 30;
+let startIndex = 48, markerSize = 16, nRep = 1, markerPos = false;
+let zoomPct = 100;
+
+// ─── Grid params ──────────────────────────────────────────────────────────────
+// unitW = unitL = unitH = 1 (fixed)
+// xpos[6]: [0, H, H+W, 2H+W, 2H+2W, 3H+2W]
+// ypos[4]: [0, H, H+L, 2H+L]
+function computeGrid(MM_I) {
+  const W = voxelW * MM_I, L = voxelL * MM_I, H = voxelH * MM_I;
+  const xpos = [0, H, H+W, 2*H+W, 2*H+2*W, 3*H+2*W];
+  const ypos = [0, H, H+L, 2*H+L];
+  const thickMM  = 0.5  * MM_I;
+  const offsetMM = 3.0  * MM_I;
+  const dashLen  = 3.0  * MM_I;
+  const gapLen   = 3.0  * MM_I;
+  return { xpos, ypos, thickMM, offsetMM, dashLen, gapLen };
+}
+
+// ─── Drawing helpers ──────────────────────────────────────────────────────────
+function dashedLine(ctx, x1, y1, x2, y2, dash, gap) {
+  const total = Math.hypot(x2 - x1, y2 - y1);
+  if (total <= 2 * gap) return;
+  const dx = (x2 - x1) / total, dy = (y2 - y1) / total;
+  let pos = gap;
+  ctx.beginPath();
+  while (pos < total - gap) {
+    ctx.moveTo(x1 + dx * pos, y1 + dy * pos);
+    const end = Math.min(pos + dash, total - gap);
+    ctx.lineTo(x1 + dx * end, y1 + dy * end);
+    pos += dash + gap;
+  }
+  ctx.stroke();
+}
+
+function solidLine(ctx, x1, y1, x2, y2) {
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.stroke();
+}
+
+// ─── Pattern drawing ──────────────────────────────────────────────────────────
+function drawBackFold(ctx, g) {
+  const { xpos: x, ypos: y, dashLen, gapLen } = g;
+  const n = x.length - 1, m = y.length - 1;
+  // Four diagonal lines at inner corners
+  dashedLine(ctx, x[0], y[0], x[1], y[1], dashLen, gapLen);
+  dashedLine(ctx, x[3], y[0], x[2], y[1], dashLen, gapLen);
+  dashedLine(ctx, x[0], y[m], x[1], y[m-1], dashLen, gapLen);
+  dashedLine(ctx, x[3], y[m], x[2], y[m-1], dashLen, gapLen);
+}
+
+function drawFrontFold(ctx, g) {
+  const { xpos: x, ypos: y, thickMM: t, dashLen, gapLen } = g;
+  const n = x.length - 1, m = y.length - 1;
+  // Vertical fold lines
+  dashedLine(ctx, x[1], y[0],   x[1], y[m],   dashLen, gapLen);
+  dashedLine(ctx, x[2], y[0],   x[2], y[m],   dashLen, gapLen);
+  dashedLine(ctx, x[3], y[1],   x[3], y[m-1], dashLen, gapLen);
+  dashedLine(ctx, x[4]-t, y[1]+t, x[4]-t, y[m-1]-t, dashLen, gapLen);
+  // Horizontal fold lines
+  dashedLine(ctx, x[0], y[1],   x[3],     y[1],   dashLen, gapLen);
+  dashedLine(ctx, x[3], y[1]+t, x[n-1]-t, y[1]+t, dashLen, gapLen);
+  dashedLine(ctx, x[0], y[m-1], x[3],     y[m-1], dashLen, gapLen);
+  dashedLine(ctx, x[3], y[m-1]-t, x[n-1]-t, y[m-1]-t, dashLen, gapLen);
+}
+
+function drawFrontCut(ctx, g) {
+  const { xpos: x, ypos: y, thickMM: t, offsetMM: off } = g;
+  const n = x.length - 1, m = y.length - 1;
+
+  // Left full edge
+  solidLine(ctx, x[0], y[0], x[0], y[m]);
+
+  // Right small tab edge
+  solidLine(ctx, x[n]-2*t, y[1]+off+t, x[n]-2*t, y[m-1]-off-t);
+
+  // Top: left portion + right flap
+  solidLine(ctx, x[0],     y[0],   x[3],         y[0]);
+  solidLine(ctx, x[3]+off, y[0]+t, x[4]-off-t,   y[0]+t);
+
+  // Bottom: left portion + right flap
+  solidLine(ctx, x[0],     y[m],   x[3],         y[m]);
+  solidLine(ctx, x[3]+off, y[m]-t, x[4]-off-t,   y[m]-t);
+
+  // Vertical segment at x[3] (top and bottom gaps)
+  solidLine(ctx, x[3], y[0],     x[3], y[1]+t);
+  solidLine(ctx, x[3], y[m-1]-t, x[3], y[m]);
+
+  // Diagonal corner cuts (top-right flap)
+  solidLine(ctx, x[4]-off-t, y[0]+t, x[4]-t, y[1]+t);
+  solidLine(ctx, x[4]-off-t, y[m]-t, x[4]-t, y[m-1]-t);
+
+  // Diagonal taper to tab (right side)
+  solidLine(ctx, x[4]-t, y[1]+t,   x[n]-2*t, y[1]+off+t);
+  solidLine(ctx, x[4]-t, y[m-1]-t, x[n]-2*t, y[m-1]-off-t);
+
+  // Short diagonal at x[3] top/bottom
+  solidLine(ctx, x[3]+off, y[0]+t, x[3], y[1]+t);
+  solidLine(ctx, x[3]+off, y[m]-t, x[3], y[m-1]-t);
+}
+
+// ─── Marker drawing ───────────────────────────────────────────────────────────
+function drawMarker(ctx, markerId, markerSizePx) {
+  // markerSizePx = Marker_Size * MM  (the "inner" size; actual = * 9/7)
+  const actual = markerSizePx * (9 / 7);
+  const cell   = actual / 9;
+  // Packed bits: bit (24 - x*5 - y) = payload[x][y], x=col, y=row within 5×5
+  const packed = ARUCO_DATA[Math.max(0, Math.min(1023, markerId))] >>> 0;
+
+  ctx.save();
+  for (let pi = 0; pi < 9; pi++) {
+    for (let pj = 0; pj < 9; pj++) {
+      let fill;
+      if (pi === 0 || pi === 8 || pj === 0 || pj === 8) {
+        fill = '#fff';  // outer quiet zone
+      } else if (pi === 1 || pi === 7 || pj === 1 || pj === 7) {
+        fill = '#000';  // black border
+      } else {
+        // inner 5×5: payload[pi-2][pj-2] → bit at position (pi-2)*5+(pj-2) from MSB
+        const bit = (packed >> (24 - (pi - 2) * 5 - (pj - 2))) & 1;
+        fill = bit ? '#fff' : '#000';
+      }
+      ctx.fillStyle = fill;
+      ctx.fillRect(Math.round(pi * cell), Math.round(pj * cell),
+                   Math.ceil(cell), Math.ceil(cell));
+    }
+  }
+
+  // ID label above marker
+  ctx.fillStyle = '#000';
+  ctx.font = `${Math.ceil(cell * 1.4)}px Arial`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'bottom';
+  ctx.fillText(String(markerId), actual / 2, 0);
+
+  ctx.restore();
+}
+
+// ─── Main render ──────────────────────────────────────────────────────────────
+function render() {
+  const canvas = document.getElementById('mainCanvas');
+  const ctx    = canvas.getContext('2d');
+  const scale  = zoomPct / 100;
+
+  // A4 landscape dimensions in px (at MM px/mm)
+  const pageW = Math.round(PRINT_W * MM * scale);
+  const pageH = Math.round(PRINT_H * MM * scale);
+  canvas.width  = pageW;
+  canvas.height = pageH;
+
+  // Background
+  ctx.fillStyle = '#888';
+  ctx.fillRect(0, 0, pageW, pageH);
+
+  // White paper
+  ctx.fillStyle = '#fff';
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 1;
+  ctx.fillRect(0, 0, pageW, pageH);
+
+  ctx.save();
+  ctx.scale(scale, scale);
+
+  // Compute grid in print coords
+  const g = computeGrid(MM);
+  const { xpos, ypos, thickMM } = g;
+
+  // Padding
+  const padX = 15 * MM, padY = 15 * MM;
+
+  // Bounding box of one pattern
+  const bboxW = xpos[xpos.length - 1] - thickMM * 2 - xpos[0];
+  const bboxH = ypos[ypos.length - 1] - ypos[0];
+
+  // Calibration crosses (grey)
+  ctx.strokeStyle = '#bbb';
+  ctx.lineWidth = 0.5;
+  drawCalibCrosses(ctx);
+
+  // Pattern(s)
+  ctx.save();
+  ctx.translate(padX, padY);
+
+  for (let i = 0; i < nRep; i++) {
+    ctx.save();
+    ctx.translate((i % 2) * bboxW, Math.floor(i / 2) * bboxH);
+
+    // Back fold: blue dashed
+    ctx.strokeStyle = '#00f';
+    ctx.lineWidth = 0.8;
+    drawBackFold(ctx, g);
+
+    // Front fold: red dashed
+    ctx.strokeStyle = '#f00';
+    ctx.lineWidth = 0.8;
+    drawFrontFold(ctx, g);
+
+    // Cut lines: red solid
+    ctx.strokeStyle = '#f00';
+    ctx.lineWidth = 1;
+    drawFrontCut(ctx, g);
+
+    // Marker (print only, not cut)
+    const m = ypos.length - 1;
+    let centerX = (xpos[1] + xpos[2]) / 2;
+    if (markerPos) centerX = (xpos[3] + xpos[2]) / 2;
+    const centerY = (ypos[1] + ypos[m - 1]) / 2;
+    const mkrPx   = markerSize * MM;
+    const mkrActual = mkrPx * (9 / 7);
+    ctx.save();
+    ctx.translate(centerX - mkrActual / 2, centerY - mkrActual / 2);
+    drawMarker(ctx, startIndex + i, mkrPx);
+    ctx.restore();
+
+    ctx.restore();
+  }
+
+  ctx.restore(); // un-translate padding
+  ctx.restore(); // un-scale
+}
+
+function drawCalibCrosses(ctx) {
+  // widthA4_C = VINYL_W*MM, heightA4_C = VINYL_H*MM (Processing globals)
+  // All coordinates are in pixels, matching Processing's line(x*MM, y*MM, ...) calls.
+  const w = VINYL_W * MM, h = VINYL_H * MM;
+  solidLine(ctx, 10*MM,   5*MM,  10*MM,  15*MM);
+  solidLine(ctx,  5*MM,  10*MM,  15*MM,  10*MM);
+  solidLine(ctx, w-10*MM, 5*MM,  w-10*MM, 15*MM);
+  solidLine(ctx, w- 5*MM, 10*MM, w-15*MM, 10*MM);
+  solidLine(ctx, 10*MM,  h- 5*MM, 10*MM,  h-15*MM);
+  solidLine(ctx,  5*MM,  h-10*MM, 15*MM,  h-10*MM);
+  solidLine(ctx, w-10*MM, h- 5*MM, w-10*MM, h-15*MM);
+  solidLine(ctx, w- 5*MM, h-10*MM, w-15*MM, h-10*MM);
+}
+
+// ─── SVG Export ───────────────────────────────────────────────────────────────
+function toSVGLine(x1, y1, x2, y2, stroke, sw, dashed) {
+  const dashAttr = dashed ? ` stroke-dasharray="3,3"` : '';
+  return `<line x1="${x1.toFixed(3)}" y1="${y1.toFixed(3)}" x2="${x2.toFixed(3)}" y2="${y2.toFixed(3)}" stroke="${stroke}" stroke-width="${sw}"${dashAttr}/>`;
+}
+
+function svgAnchor(x, y) {
+  // Matches Processing's point() in SVG mode: tiny filled circle
+  return `<circle cx="${x.toFixed(3)}" cy="${y.toFixed(3)}" r="0.5" fill="#000" stroke="none"/>`;
+}
+
+function buildSVGLines() {
+  // Use vinyl coords for the cut SVG (matching Processing's SVG export)
+  const g = computeGrid(MM_V);
+  const { xpos, ypos, thickMM, offsetMM } = g;
+  const padX = 15 * MM_V, padY = 15 * MM_V;
+  const bboxW = xpos[xpos.length-1] - thickMM*2 - xpos[0];
+  const bboxH = ypos[ypos.length-1] - ypos[0];
+  const vW = VINYL_W * MM_V, vH = VINYL_H * MM_V;
+
+  // Anchors at canvas corners (drawAnchors_V, before any translate)
+  let lines = [
+    svgAnchor(0, 0), svgAnchor(vW, 0), svgAnchor(0, vH), svgAnchor(vW, vH),
+  ];
+
+  function addDashed(x1, y1, x2, y2, dx, dy, stroke) {
+    // Collect dashed segments
+    const total = Math.hypot(x2-x1, y2-y1);
+    const dl = 3 * MM_V, gl = 3 * MM_V;
+    if (total <= 2*gl) return;
+    let pos = gl;
+    while (pos < total - gl) {
+      const sx = x1 + dx*pos, sy = y1 + dy*pos;
+      const ep = Math.min(pos + dl, total - gl);
+      lines.push(toSVGLine(sx+padX, sy+padY, x1+dx*ep+padX, y1+dy*ep+padY, stroke, 0.5, false));
+      pos += dl + gl;
+    }
+  }
+
+  for (let i = 0; i < nRep; i++) {
+    const ox = (i % 2) * bboxW, oy = Math.floor(i / 2) * bboxH;
+    const x = xpos.map(v => v + ox), y = ypos.map(v => v + oy);
+    const n = x.length-1, m = y.length-1;
+    const t = thickMM, off = offsetMM;
+
+    function dline(x1,y1,x2,y2, stroke) {
+      const tot = Math.hypot(x2-x1,y2-y1);
+      if (tot < 1e-6) return;
+      const dx=(x2-x1)/tot, dy=(y2-y1)/tot;
+      addDashed(x1,y1,x2,y2,dx,dy,stroke);
+    }
+    function sline(x1,y1,x2,y2) {
+      lines.push(toSVGLine(x1+padX, y1+padY, x2+padX, y2+padY, '#000', 0.5, false));
+    }
+
+    // Back fold (blue → black in SVG)
+    dline(x[0],y[0],x[1],y[1],'#000');
+    dline(x[3],y[0],x[2],y[1],'#000');
+    dline(x[0],y[m],x[1],y[m-1],'#000');
+    dline(x[3],y[m],x[2],y[m-1],'#000');
+
+    // Front fold (red → black dashed)
+    dline(x[1],y[0],x[1],y[m],'#000');
+    dline(x[2],y[0],x[2],y[m],'#000');
+    dline(x[3],y[1],x[3],y[m-1],'#000');
+    dline(x[4]-t,y[1]+t,x[4]-t,y[m-1]-t,'#000');
+    dline(x[0],y[1],x[3],y[1],'#000');
+    dline(x[3],y[1]+t,x[n-1]-t,y[1]+t,'#000');
+    dline(x[0],y[m-1],x[3],y[m-1],'#000');
+    dline(x[3],y[m-1]-t,x[n-1]-t,y[m-1]-t,'#000');
+
+    // Cut lines (solid)
+    sline(x[0],y[0],x[0],y[m]);
+    sline(x[n]-2*t,y[1]+off+t,x[n]-2*t,y[m-1]-off-t);
+    sline(x[0],y[0],x[3],y[0]);
+    sline(x[3]+off,y[0]+t,x[4]-off-t,y[0]+t);
+    sline(x[0],y[m],x[3],y[m]);
+    sline(x[3]+off,y[m]-t,x[4]-off-t,y[m]-t);
+    sline(x[3],y[0],x[3],y[1]+t);
+    sline(x[3],y[m-1]-t,x[3],y[m]);
+    sline(x[4]-off-t,y[0]+t,x[4]-t,y[1]+t);
+    sline(x[4]-off-t,y[m]-t,x[4]-t,y[m-1]-t);
+    sline(x[4]-t,y[1]+t,x[n]-2*t,y[1]+off+t);
+    sline(x[4]-t,y[m-1]-t,x[n]-2*t,y[m-1]-off-t);
+    sline(x[3]+off,y[0]+t,x[3],y[1]+t);
+    sline(x[3]+off,y[m]-t,x[3],y[m-1]-t);
+  }
+
+  return lines;
+}
+
+function exportCalibSVG() {
+  // Anchor points at canvas corners + calibration crosses symmetric at 10mm from each corner,
+  // matching drawCalibCrosses() (print version) translated to vinyl coords (MM_V).
+  // Physical size in mm; viewBox uses MM_V internal units.
+  const vW = VINYL_W * MM_V;  // internal width  (user units)
+  const vH = VINYL_H * MM_V;  // internal height (user units)
+
+  // L takes coordinates in mm, converts to SVG user units
+  function L(x1mm, y1mm, x2mm, y2mm) {
+    return `<line x1="${(x1mm*MM_V).toFixed(3)}" y1="${(y1mm*MM_V).toFixed(3)}" x2="${(x2mm*MM_V).toFixed(3)}" y2="${(y2mm*MM_V).toFixed(3)}" stroke="#000" stroke-width="0.5"/>`;
+  }
+
+  // Cross centers at 10mm from each corner (symmetric, matching print calib):
+  // TL:(10,10)  TR:(270,10)  BL:(10,190)  BR:(270,190)  — arms ±5mm from center
+  const W = VINYL_W, H = VINYL_H;
+  const lines = [
+    // Anchors at canvas corners (drawAnchors_V)
+    svgAnchor(0, 0), svgAnchor(vW, 0), svgAnchor(0, vH), svgAnchor(vW, vH),
+    // TL cross  center (10, 10)
+    L(10,  5, 10, 15),  L( 5, 10, 15, 10),
+    // TR cross  center (W-10, 10)
+    L(W-10,  5, W-10, 15),  L(W-15, 10, W-5, 10),
+    // BL cross  center (10, H-10)
+    L(10, H-15, 10, H-5),  L( 5, H-10, 15, H-10),
+    // BR cross  center (W-10, H-10)
+    L(W-10, H-15, W-10, H-5),  L(W-15, H-10, W-5, H-10),
+  ];
+
+  const svg = [
+    `<?xml version="1.0" encoding="UTF-8"?>`,
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${VINYL_W}mm" height="${VINYL_H}mm" viewBox="0 0 ${vW.toFixed(3)} ${vH.toFixed(3)}">`,
+    ...lines,
+    `</svg>`
+  ].join('\n');
+
+  const blob = new Blob([svg], { type: 'image/svg+xml' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url;
+  a.download = `calib_f_${Date.now()}.svg`;
+  a.click();
+  URL.revokeObjectURL(url);
+  document.getElementById('status').textContent = 'Calib SVG exported.';
+}
+
+function exportSVG() {
+  const vW = VINYL_W * MM_V;  // internal width  (user units)
+  const vH = VINYL_H * MM_V;  // internal height (user units)
+  const lines = buildSVGLines();
+  const svg = [
+    `<?xml version="1.0" encoding="UTF-8"?>`,
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${VINYL_W}mm" height="${VINYL_H}mm" viewBox="0 0 ${vW.toFixed(3)} ${vH.toFixed(3)}">`,
+    ...lines,
+    `</svg>`
+  ].join('\n');
+
+  const blob = new Blob([svg], { type: 'image/svg+xml' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url;
+  a.download = `res_f_${Date.now()}.svg`;
+  a.click();
+  URL.revokeObjectURL(url);
+  document.getElementById('status').textContent = 'SVG exported.';
+}
+
+// ─── UI wiring ────────────────────────────────────────────────────────────────
+function bindInputs() {
+  function num(id, setter) {
+    document.getElementById(id).addEventListener('input', e => {
+      setter(parseFloat(e.target.value));
+      render();
+    });
+  }
+  num('voxelW',    v => voxelW     = v);
+  num('voxelL',    v => voxelL     = v);
+  num('voxelH',    v => voxelH     = v);
+  num('markerId',  v => startIndex = Math.round(v));
+  num('markerSize',v => markerSize = v);
+  num('nRep',      v => nRep       = Math.max(1, Math.min(4, Math.round(v))));
+
+  document.getElementById('markerPos').addEventListener('change', e => {
+    markerPos = e.target.checked;
+    render();
+  });
+
+  document.getElementById('zoom').addEventListener('input', e => {
+    zoomPct = parseInt(e.target.value);
+    document.getElementById('zoomVal').textContent = zoomPct + '%';
+    render();
+  });
+
+  document.getElementById('btnExportSVG').addEventListener('click', exportSVG);
+  document.getElementById('btnExportCalib').addEventListener('click', exportCalibSVG);
+  document.getElementById('btnPrint').addEventListener('click', () => {
+    // Re-render at zoom=100 so canvas pixels map 1:1 to the @page dimensions,
+    // then restore the user's zoom after the print dialog closes.
+    const saved = zoomPct;
+    zoomPct = 100;
+    render();
+    window.print();
+    zoomPct = saved;
+    render();
+  });
+}
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
+bindInputs();
+render();
+</script>
+
+<style media="print">
+  @page { size: 297mm 210mm; margin: 0; }
+  #sidebar { display: none; }
+  #canvas-wrap { padding: 0; overflow: visible; width: 297mm; height: 210mm; }
+  body { background: white; display: block; }
+  canvas { width: 297mm !important; height: 210mm !important; display: block; }
+</style>
+
+</body>
+</html>
