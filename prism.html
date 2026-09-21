@@ -73,11 +73,11 @@
   <div class="field row2">
     <div>
       <label>Top diameter</label>
-      <input type="number" id="topD" value="40" min="1" max="70" step="0.5">
+      <input type="number" id="topD" value="40" min="1" max="150" step="1">
     </div>
     <div>
       <label>Bottom diameter</label>
-      <input type="number" id="botD" value="40" min="1" max="70" step="0.5">
+      <input type="number" id="botD" value="40" min="1" max="150" step="1">
     </div>
   </div>
   <div class="toggle-row">
@@ -137,11 +137,13 @@
 
   <hr>
   <div><h3>View</h3></div>
+  <button id="btn3D" style="background:#559;color:#fff">View in 3D</button>
   <div id="zoom-row">
     <span>Zoom</span>
     <input type="range" id="zoom" min="20" max="200" value="100" step="5">
     <span id="zoomVal">100%</span>
   </div>
+  <div id="hint3D" style="display:none;font-size:10px;color:#999">Drag to rotate · scroll to zoom</div>
 
   <hr>
   <div><h3>Export</h3></div>
@@ -207,6 +209,11 @@ let topOffX = 0, topOffY = 0, botOffX = 0, botOffY = 0;
 // Side-panel strip position offset (mm) — moves the strip (lines + texture) only.
 let stripOffX = 0, stripOffY = 0;
 
+// 3D preview state (mirrors Processing's drawPrismWireframe).
+let view3D = false;
+let angleX = -0.55, angleY = 0.6, zoom3D = 5;   // radians, radians, px per mm
+let drag3D = false, dragPX = 0, dragPY = 0;
+
 // Derived params (populated by computeParams)
 const P = {};
 
@@ -216,7 +223,12 @@ function computeParams(MM_I) {
   P.n         = n;
   P.cellTopL  = uiTopW * chord * MM_I;
   P.cellBaseL = uiBotW * chord * MM_I;
-  P.cylH      = uiHeight * MM_I;
+  // Flat-pattern panel height = conical-frustum SLANT height, from the user's
+  // height and top/bottom diameters:  slant = sqrt(H^2 + ((botD - topD)/2)^2).
+  // This makes the folded shape reach the entered vertical height.
+  const _vertH = uiHeight * MM_I;
+  const _dR    = ((uiBotW - uiTopW) / 2) * MM_I;   // bottom radius − top radius
+  P.cylH      = Math.sqrt(_vertH * _vertH + _dR * _dR);
 
   // When flaps are off, only the left seam flap draws — keep a full 5 mm depth
   // regardless of side count. When flaps are on, clamp to the panel width so
@@ -664,7 +676,96 @@ function drawArt(ctx, scale) {
   ctx.restore();
 }
 
+// 3D preview of the prism/frustum (solid faces + caps + wireframe), ported from
+// Processing's drawPrismWireframe(): caps gated by the surface toggles, vertical
+// seam edges gated by Draw-flaps.
+function render3D() {
+  const canvas = document.getElementById('mainCanvas');
+  const ctx = canvas.getContext('2d');
+  const W = 820, H = 620;
+  canvas.width = W; canvas.height = H;
+  ctx.fillStyle = '#666'; ctx.fillRect(0, 0, W, H);
+
+  const n = Math.max(3, nSides);
+  const Rt = uiTopW / 2, Rb = uiBotW / 2, hh = uiHeight / 2;   // circumradius = D/2
+  const top3 = [], bot3 = [];
+  for (let i = 0; i < n; i++) {
+    const a = i * TWO_PI / n;
+    top3.push([Rt * Math.cos(a),  hh, Rt * Math.sin(a)]);   // top surface up
+    bot3.push([Rb * Math.cos(a), -hh, Rb * Math.sin(a)]);   // bottom surface down
+  }
+
+  const cx = Math.cos(angleX), sx = Math.sin(angleX);
+  const cy = Math.cos(angleY), sy = Math.sin(angleY);
+  const rot = ([x, y, z]) => {
+    const x1 = x * cy + z * sy, z1 = -x * sy + z * cy;      // rotate Y
+    const y2 = y * cx - z1 * sx, z2 = y * sx + z1 * cx;     // rotate X
+    return [x1, y2, z2];
+  };
+  const scr = ([x, y]) => [W / 2 + x * zoom3D, H / 2 - y * zoom3D];  // y up
+  const T = top3.map(rot), B = bot3.map(rot);
+
+  // Collect faces with average depth for painter's ordering.
+  const faces = [];
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    faces.push({ type:'side', i, v: [T[i], T[j], B[j], B[i]], z: (T[i][2] + T[j][2] + B[j][2] + B[i][2]) / 4 });
+  }
+  if (showTopSurface)    faces.push({ type:'cap', which:'top', v: T, z: T.reduce((s, p) => s + p[2], 0) / n });
+  if (showBottomSurface) faces.push({ type:'cap', which:'bot', v: B, z: B.reduce((s, p) => s + p[2], 0) / n });
+  faces.sort((a, b) => a.z - b.z);   // far (smaller z) first
+
+  const iw = stripImg ? stripImg.width : 0, ih = stripImg ? stripImg.height : 0;
+  const fill = (sp, style) => { ctx.fillStyle = style; ctx.beginPath();
+    sp.forEach((s, k) => k ? ctx.lineTo(s[0], s[1]) : ctx.moveTo(s[0], s[1])); ctx.closePath(); ctx.fill(); };
+
+  // Faces: textured where an image is available, else solid; both get depth shading.
+  for (const f of faces) {
+    const sp = f.v.map(scr);
+    const p0=f.v[0], p1=f.v[1], p2=f.v[2];
+    const ux=p1[0]-p0[0],uy=p1[1]-p0[1],uz=p1[2]-p0[2], vx=p2[0]-p0[0],vy=p2[1]-p0[1],vz=p2[2]-p0[2];
+    const nz=ux*vy-uy*vx, nlen=Math.hypot(uy*vz-uz*vy, uz*vx-ux*vz, nz)||1;
+    const facing = Math.abs(nz/nlen);                          // 0 (edge-on) .. 1 (toward viewer)
+
+    let textured = false;
+    if (f.type==='side' && stripImg) {
+      // U mirrored (iw - x) so the strip wraps the OUTER surface (matches the 2D plan)
+      const u0=iw-(f.i/n)*iw, u1=iw-((f.i+1)/n)*iw;            // panel's U slice; v: top=0, bottom=ih
+      const TL=sp[0], TR=sp[1], BR=sp[2], BL=sp[3];
+      textureTriangle(ctx, stripImg, u0,0, u1,0, u1,ih, TL[0],TL[1], TR[0],TR[1], BR[0],BR[1]);
+      textureTriangle(ctx, stripImg, u0,0, u1,ih, u0,ih, TL[0],TL[1], BR[0],BR[1], BL[0],BL[1]);
+      textured = true;
+    } else if (f.type==='cap' && ((f.which==='top'&&topImg)||(f.which==='bot'&&botImg))) {
+      const img = f.which==='top' ? topImg : botImg;
+      const icx=img.width/2, icy=img.height/2, R=Math.min(img.width,img.height)/2;
+      let ccx=0, ccy=0; sp.forEach(s=>{ccx+=s[0];ccy+=s[1];}); ccx/=sp.length; ccy/=sp.length;
+      for (let i=0;i<n;i++){ const j=(i+1)%n, a0=i*TWO_PI/n, a1=j*TWO_PI/n;
+        textureTriangle(ctx, img, icx,icy, icx+R*Math.cos(a0),icy+R*Math.sin(a0), icx+R*Math.cos(a1),icy+R*Math.sin(a1),
+          ccx,ccy, sp[i][0],sp[i][1], sp[j][0],sp[j][1]); }
+      textured = true;
+    }
+
+    if (textured) {
+      fill(sp, `rgba(0,0,0,${(0.45*(1-facing)).toFixed(3)})`);  // depth shade over texture
+    } else {
+      const shade = 150 + Math.round(90 * facing);
+      fill(sp, f.type==='cap' ? `rgb(${shade+15},${shade+15},${shade+20})` : `rgb(${shade},${shade},${shade})`);
+    }
+  }
+
+  // Wireframe: top & bottom ring outlines always; vertical seams only with flaps.
+  ctx.strokeStyle = '#111'; ctx.lineWidth = 1.5;
+  const ring = (pts) => { ctx.beginPath(); pts.forEach((p, k) => { const s = scr(p); k ? ctx.lineTo(s[0], s[1]) : ctx.moveTo(s[0], s[1]); }); ctx.closePath(); ctx.stroke(); };
+  ring(T); ring(B);
+  if (showFlaps) {
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) { const a = scr(T[i]), b = scr(B[i]); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); }
+    ctx.stroke();
+  }
+}
+
 function render() {
+  if (view3D) { render3D(); return; }
   const canvas = document.getElementById('mainCanvas');
   const ctx = canvas.getContext('2d');
   const scale = zoomPct / 100;
@@ -824,6 +925,31 @@ function bind() {
   $('zoom').addEventListener('input', e => {
     zoomPct = +e.target.value; $('zoomVal').textContent = zoomPct + '%'; render();
   });
+
+  // 3D preview toggle + drag-to-rotate / scroll-to-zoom
+  $('btn3D').addEventListener('click', () => {
+    view3D = !view3D;
+    $('btn3D').textContent = view3D ? 'View in 2D' : 'View in 3D';
+    $('hint3D').style.display = view3D ? '' : 'none';
+    render();
+  });
+  const cv = $('mainCanvas');
+  cv.addEventListener('mousedown', e => { if (!view3D) return; drag3D = true; dragPX = e.clientX; dragPY = e.clientY; });
+  window.addEventListener('mouseup', () => { drag3D = false; });
+  window.addEventListener('mousemove', e => {
+    if (!drag3D) return;
+    angleY += (e.clientX - dragPX) * 0.01;
+    angleX += (e.clientY - dragPY) * 0.01;
+    dragPX = e.clientX; dragPY = e.clientY;
+    render();
+  });
+  cv.addEventListener('wheel', e => {
+    if (!view3D) return;
+    e.preventDefault();
+    zoom3D = Math.max(1, Math.min(40, zoom3D * (e.deltaY < 0 ? 1.1 : 0.9)));
+    render();
+  }, { passive: false });
+
   $('btnExportSVG').addEventListener('click', exportSVG);
   $('btnExportCalib').addEventListener('click', exportCalibSVG);
   $('btnPrint').addEventListener('click', exportPDF);
