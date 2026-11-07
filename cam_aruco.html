@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>In-Browser 3D Pose Estimation & Streamer</title>
+    <!-- js-aruco detection & POSIT 3D pose estimation engine -->
+    <script src="https://cdn.jsdelivr.net/gh/jcmellado/js-aruco/src/cv.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/jcmellado/js-aruco/src/aruco.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/jcmellado/js-aruco/src/svd.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/jcmellado/js-aruco/src/posit1.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: #0f172a;
+            color: #f8fafc;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        .card {
+            background-color: #1e293b;
+            padding: 24px;
+            border-radius: 12px;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+            width: 100%;
+            max-width: 740px;
+            text-align: center;
+        }
+
+        h2 { margin: 0 0 16px 0; font-size: 1.4rem; color: #38bdf8; }
+
+        .controls-grid {
+            display: grid;
+            grid-template-columns: 1.2fr 1fr 0.8fr;
+            gap: 12px;
+            margin-bottom: 16px;
+            text-align: left;
+        }
+
+        label {
+            font-size: 0.8rem;
+            color: #94a3b8;
+            font-weight: 600;
+            display: block;
+            margin-bottom: 4px;
+        }
+
+        select, input {
+            width: 100%;
+            padding: 9px;
+            border-radius: 6px;
+            background-color: #334155;
+            color: #ffffff;
+            border: 1px solid #475569;
+            font-size: 0.85rem;
+            outline: none;
+            box-sizing: border-box;
+        }
+
+        select:focus, input:focus { border-color: #38bdf8; }
+        optgroup { color: #94a3b8; background-color: #1e293b; font-weight: bold; }
+        option { color: #ffffff; background-color: #334155; }
+
+        .viewport-wrapper {
+            position: relative;
+            width: 100%;
+            border-radius: 8px;
+            overflow: hidden;
+            background-color: #020617;
+            border: 1px solid #334155;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 360px;
+        }
+
+        video { display: none; }
+        canvas {
+            width: 100%;
+            max-height: 460px;
+            object-fit: contain;
+            display: block;
+        }
+
+        .actions {
+            margin-top: 16px;
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        button {
+            padding: 10px 18px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+
+        .btn-refresh { background-color: #6366f1; color: white; }
+        .btn-start { background-color: #10b981; color: white; }
+        .btn-stop { background-color: #ef4444; color: white; }
+
+        button:disabled { opacity: 0.4; cursor: not-allowed; }
+        #status { margin-top: 14px; font-size: 0.85rem; color: #94a3b8; }
+        .badge { color: #38bdf8; font-weight: bold; }
+        .pose-info { color: #34d399; font-weight: 600; }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h2>Client-Side 3D Pose Estimation</h2>
+
+    <div class="controls-grid">
+        <div>
+            <label for="cameraSelect">Camera Device / Sensor:</label>
+            <select id="cameraSelect">
+                <option value="">Scanning cameras...</option>
+            </select>
+        </div>
+        <div>
+            <label for="resolutionSelect">Resolution:</label>
+            <select id="resolutionSelect">
+                <option value="640x480" selected>640 × 480 (Recommended)</option>
+                <option value="1280x720">1280 × 720 (720p HD)</option>
+                <option value="1920x1080">1920 × 1080 (1080p FHD)</option>
+            </select>
+        </div>
+        <div>
+            <label for="markerSizeInput">Marker Size (mm):</label>
+            <input type="number" id="markerSizeInput" value="50" min="5" max="500">
+        </div>
+    </div>
+
+    <div class="viewport-wrapper">
+        <video id="webcam" autoplay playsinline muted></video>
+        <canvas id="outputCanvas"></canvas>
+    </div>
+
+    <div class="actions">
+        <button id="refreshBtn" class="btn-refresh">Refresh Devices</button>
+        <button id="startBtn" class="btn-start">Start Stream</button>
+        <button id="stopBtn" class="btn-stop" disabled>Stop</button>
+    </div>
+
+    <p id="status">Scanning cameras...</p>
+</div>
+
+<script>
+    const cameraSelect = document.getElementById('cameraSelect');
+    const resolutionSelect = document.getElementById('resolutionSelect');
+    const markerSizeInput = document.getElementById('markerSizeInput');
+    const refreshBtn = document.getElementById('refreshBtn');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const statusEl = document.getElementById('status');
+    const video = document.getElementById('webcam');
+    const canvas = document.getElementById('outputCanvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+    let ws = null;
+    let stream = null;
+    let animationFrameId = null;
+    let arucoDetector = null;
+    let posit = null;
+    let currentMarkerPhysicalSize = 50.0; // mm
+    let lastSendTime = 0;
+    let isSending = false;
+    const TARGET_FPS = 25;
+
+    const detectCanvas = document.createElement('canvas');
+    const detectCtx = detectCanvas.getContext('2d', { willReadFrequently: true });
+    const MAX_DETECT_WIDTH = 640;
+
+    try {
+        arucoDetector = new AR.Detector();
+    } catch (e) {
+        console.error("Failed to initialize AR.Detector:", e);
+    }
+
+    function initPosit(focalLength, physicalSize) {
+        // POSIT needs: model physical size in mm & camera focal length in pixels
+        posit = new POS.Posit(physicalSize, focalLength);
+    }
+
+    async function updateDeviceList() {
+        try {
+            statusEl.innerText = "Querying camera devices...";
+            const temp = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+            temp.getTracks().forEach(t => t.stop());
+
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const videoInputs = devices.filter(d => d.kind === 'videoinput');
+            const previousSelection = cameraSelect.value;
+            cameraSelect.innerHTML = '';
+
+            const hwGroup = document.createElement('optgroup');
+            hwGroup.label = "Hardware / USB Webcams";
+            videoInputs.forEach((device, index) => {
+                const opt = document.createElement('option');
+                opt.value = `id:${device.deviceId}`;
+                let label = device.label || `Camera ${index + 1}`;
+                if (label.toLowerCase().includes("usb") || !label.toLowerCase().includes("microsoft")) {
+                    label = `📷 ${label}`;
+                }
+                opt.text = label;
+                hwGroup.appendChild(opt);
+            });
+            cameraSelect.appendChild(hwGroup);
+
+            const surfaceGroup = document.createElement('optgroup');
+            surfaceGroup.label = "Surface Integrated Sensors";
+            const frontOpt = document.createElement('option');
+            frontOpt.value = "facing:user";
+            frontOpt.text = "Surface Front Camera (User)";
+
+            const rearOpt = document.createElement('option');
+            rearOpt.value = "facing:environment";
+            rearOpt.text = "Surface Rear Camera (Environment)";
+
+            surfaceGroup.appendChild(frontOpt);
+            surfaceGroup.appendChild(rearOpt);
+            cameraSelect.appendChild(surfaceGroup);
+
+            if (previousSelection && [...cameraSelect.options].some(o => o.value === previousSelection)) {
+                cameraSelect.value = previousSelection;
+            }
+            statusEl.innerText = `Ready. Found ${videoInputs.length} hardware camera(s).`;
+        } catch (err) {
+            console.error("Device error:", err);
+            statusEl.innerText = `Camera error: ${err.message}`;
+        }
+    }
+
+    async function acquireCameraStream(selectedTarget, resChoice) {
+        const [targetW, targetH] = resChoice.split('x').map(Number);
+        const isDeviceId = selectedTarget.startsWith("id:");
+        const devId = isDeviceId ? selectedTarget.replace("id:", "") : null;
+        const isRear = selectedTarget === "facing:environment";
+        const isFront = selectedTarget === "facing:user";
+
+        if (targetW > 640) {
+            try {
+                return await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        ...(devId && { deviceId: { exact: devId } }),
+                        ...(isRear && { facingMode: { exact: "environment" } }),
+                        ...(isFront && { facingMode: { exact: "user" } }),
+                        width: { min: targetW, ideal: targetW },
+                        height: { min: targetH, ideal: targetH },
+                        aspectRatio: { ideal: targetW / targetH }
+                    },
+                    audio: false
+                });
+            } catch (err) {
+                console.warn("Exact HD failed, falling back to ideal:", err);
+            }
+        }
+
+        return await navigator.mediaDevices.getUserMedia({
+            video: {
+                ...(devId && { deviceId: devId }),
+                ...(isRear && { facingMode: "environment" }),
+                ...(isFront && { facingMode: "user" }),
+                width: { ideal: targetW },
+                height: { ideal: targetH }
+            },
+            audio: false
+        });
+    }
+
+    // Extract Euler angles (Yaw, Pitch, Roll in degrees) from 3x3 Rotation Matrix
+    function extractEulerAngles(R) {
+        let yaw, pitch, roll;
+        if (Math.abs(R[2][0]) !== 1) {
+            pitch = -Math.asin(R[2][0]);
+            roll = Math.atan2(R[2][1] / Math.cos(pitch), R[2][2] / Math.cos(pitch));
+            yaw = Math.atan2(R[1][0] / Math.cos(pitch), R[0][0] / Math.cos(pitch));
+        } else {
+            yaw = 0;
+            if (R[2][0] === -1) {
+                pitch = Math.PI / 2;
+                roll = Math.atan2(R[0][1], R[0][2]);
+            } else {
+                pitch = -Math.PI / 2;
+                roll = Math.atan2(-R[0][1], -R[0][2]);
+            }
+        }
+        const toDeg = 180 / Math.PI;
+        return {
+            yaw: +(yaw * toDeg).toFixed(1),
+            pitch: +(pitch * toDeg).toFixed(1),
+            roll: +(roll * toDeg).toFixed(1)
+        };
+    }
+
+    // Draw 3D coordinate axes projected back onto the 2D canvas
+    function draw3DAxes(corners, pose, focalLength) {
+        const cx = canvas.width / 2;
+        const cy = canvas.height / 2;
+        const originX = pose.bestTranslation[0];
+        const originY = pose.bestTranslation[1];
+        const originZ = pose.bestTranslation[2];
+        const rot = pose.bestRotation;
+        const axisLength = currentMarkerPhysicalSize * 0.8;
+
+        function project(x, y, z) {
+            return {
+                x: cx + (x * focalLength) / z,
+                y: cy - (y * focalLength) / z
+            };
+        }
+
+        const o2d = project(originX, originY, originZ);
+
+        // X-axis (Red)
+        const x3d = project(
+            originX + rot[0][0] * axisLength,
+            originY + rot[1][0] * axisLength,
+            originZ + rot[2][0] * axisLength
+        );
+        ctx.strokeStyle = "#ef4444";
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(o2d.x, o2d.y);
+        ctx.lineTo(x3d.x, x3d.y);
+        ctx.stroke();
+
+        // Y-axis (Green)
+        const y3d = project(
+            originX + rot[0][1] * axisLength,
+            originY + rot[1][1] * axisLength,
+            originZ + rot[2][1] * axisLength
+        );
+        ctx.strokeStyle = "#22c55e";
+        ctx.beginPath();
+        ctx.moveTo(o2d.x, o2d.y);
+        ctx.lineTo(y3d.x, y3d.y);
+        ctx.stroke();
+
+        // Z-axis (Blue, points out of marker)
+        const z3d = project(
+            originX + rot[0][2] * axisLength,
+            originY + rot[1][2] * axisLength,
+            originZ + rot[2][2] * axisLength
+        );
+        ctx.strokeStyle = "#38bdf8";
+        ctx.beginPath();
+        ctx.moveTo(o2d.x, o2d.y);
+        ctx.lineTo(z3d.x, z3d.y);
+        ctx.stroke();
+    }
+
+    function connectWebSocket() {
+        if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+            return;
+        }
+
+        try {
+            ws = new WebSocket('ws://localhost:8765');
+            ws.binaryType = 'arraybuffer';
+            ws.onopen = () => console.log("Connected to Processing.");
+            ws.onerror = () => console.warn("Processing unreachable on port 8765.");
+            ws.onclose = () => { ws = null; };
+        } catch (e) {
+            console.error("WS error:", e);
+        }
+    }
+
+    function processLoop(timestamp) {
+        if (!stream) return;
+
+        if (video.readyState >= 2) {
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            const scaleFactor = canvas.width > MAX_DETECT_WIDTH ? (canvas.width / MAX_DETECT_WIDTH) : 1;
+            const detectW = Math.round(canvas.width / scaleFactor);
+            const detectH = Math.round(canvas.height / scaleFactor);
+
+            detectCanvas.width = detectW;
+            detectCanvas.height = detectH;
+            detectCtx.drawImage(video, 0, 0, detectW, detectH);
+
+            const computedPoses = [];
+            // Approximate camera focal length: standard webcams ~ canvas.width * 1.15
+            const focalLength = canvas.width * 1.15;
+
+            try {
+                const imgData = detectCtx.getImageData(0, 0, detectW, detectH);
+                const rawMarkers = arucoDetector.detect(imgData);
+
+                rawMarkers.forEach(marker => {
+                    // Rescale detected corners to full display canvas
+                    const scaledCorners = marker.corners.map(pt => ({
+                        x: pt.x * scaleFactor,
+                        y: pt.y * scaleFactor
+                    }));
+
+                    // Convert pixel coordinates to optical centered coordinates for POSIT
+                    const positCorners = scaledCorners.map(pt => ({
+                        x: pt.x - (canvas.width / 2),
+                        y: (canvas.height / 2) - pt.y // Invert Y for optical plane
+                    }));
+
+                    // Run 3D Pose Estimation via POSIT algorithm
+                    const pose = posit.pose(positCorners);
+
+                    if (pose && pose.bestTranslation) {
+                        const euler = extractEulerAngles(pose.bestRotation);
+
+                        // Draw 3D axis directly in the HTML view
+                        draw3DAxes(scaledCorners, pose, focalLength);
+
+                        computedPoses.push({
+                            id: marker.id,
+                            translation: {
+                                x: Math.round(pose.bestTranslation[0]),
+                                y: Math.round(pose.bestTranslation[1]),
+                                z: Math.round(pose.bestTranslation[2])
+                            },
+                            rotation: {
+                                matrix: pose.bestRotation,
+                                euler: euler
+                            }
+                        });
+                    }
+                });
+
+                if (computedPoses.length > 0) {
+                    const first = computedPoses[0];
+                    statusEl.innerHTML = `Marker #${first.id} | Pos: <span class="pose-info">[X:${first.translation.x}, Y:${first.translation.y}, Z:${first.translation.z}mm]</span> | Euler: <span class="badge">[Y:${first.rotation.euler.yaw}°, P:${first.rotation.euler.pitch}°, R:${first.rotation.euler.roll}°]</span>`;
+                } else {
+                    statusEl.innerHTML = `Active: <span class="badge">${canvas.width}x${canvas.height}</span> | Searching for DICT_ARUCO_ORIGINAL markers...`;
+                }
+            } catch (err) {
+                console.error("Pose computation error:", err);
+            }
+
+            // Stream 3D Pose JSON and JPEG frame to Processing
+            if (ws && ws.readyState === WebSocket.OPEN && !isSending) {
+                if (timestamp - lastSendTime >= 1000 / TARGET_FPS) {
+                    lastSendTime = timestamp;
+                    isSending = true;
+
+                    // 1. Send complete 3D Pose payload
+                    const posePayload = JSON.stringify({
+                        timestamp: Date.now(),
+                        frameWidth: canvas.width,
+                        frameHeight: canvas.height,
+                        focalLength: focalLength,
+                        poses: computedPoses
+                    });
+                    ws.send(posePayload);
+
+                    // 2. Send Binary JPEG Frame
+                    canvas.toBlob((blob) => {
+                        if (blob && ws && ws.readyState === WebSocket.OPEN) {
+                            blob.arrayBuffer().then(buf => {
+                                ws.send(buf);
+                                isSending = false;
+                            }).catch(() => { isSending = false; });
+                        } else {
+                            isSending = false;
+                        }
+                    }, 'image/jpeg', 0.6);
+                }
+            }
+        }
+
+        animationFrameId = requestAnimationFrame(processLoop);
+    }
+
+    async function startStream() {
+        const selectedTarget = cameraSelect.value;
+        const resChoice = resolutionSelect.value;
+        currentMarkerPhysicalSize = parseFloat(markerSizeInput.value) || 50.0;
+
+        if (stream) {
+            stream.getTracks().forEach(t => t.stop());
+            stream = null;
+        }
+
+        try {
+            statusEl.innerText = "Starting camera...";
+            stream = await acquireCameraStream(selectedTarget, resChoice);
+            video.srcObject = stream;
+
+            await new Promise((resolve) => {
+                video.onloadedmetadata = () => {
+                    video.play().then(resolve);
+                };
+            });
+
+            const [targetW, targetH] = resChoice.split('x').map(Number);
+            canvas.width = video.videoWidth || targetW;
+            canvas.height = video.videoHeight || targetH;
+
+            // Initialize POSIT with active canvas focal length & physical size
+            const focalLength = canvas.width * 1.15;
+            initPosit(focalLength, currentMarkerPhysicalSize);
+
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+            refreshBtn.disabled = true;
+            cameraSelect.disabled = true;
+            resolutionSelect.disabled = true;
+            markerSizeInput.disabled = true;
+
+            connectWebSocket();
+            animationFrameId = requestAnimationFrame(processLoop);
+
+        } catch (err) {
+            console.error("Start failed:", err);
+            statusEl.innerText = `Camera error: ${err.message}`;
+            stopStream();
+        }
+    }
+
+    function stopStream() {
+        if (animationFrameId) {
+            cancelAnimationFrame(animationFrameId);
+            animationFrameId = null;
+        }
+        if (stream) {
+            stream.getTracks().forEach(t => t.stop());
+            video.srcObject = null;
+            stream = null;
+        }
+        if (ws) {
+            ws.close();
+            ws = null;
+        }
+
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+        refreshBtn.disabled = false;
+        cameraSelect.disabled = false;
+        resolutionSelect.disabled = false;
+        markerSizeInput.disabled = false;
+        statusEl.innerText = "Status: Stopped";
+    }
+
+    navigator.mediaDevices.addEventListener('devicechange', () => {
+        if (!stream) updateDeviceList();
+    });
+
+    refreshBtn.addEventListener('click', updateDeviceList);
+    startBtn.addEventListener('click', startStream);
+    stopBtn.addEventListener('click', stopStream);
+    window.addEventListener('DOMContentLoaded', updateDeviceList);
+</script>
+
+</body>
+</html>

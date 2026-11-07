@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-Camera HD to Python Streamer</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: #0f172a;
+            color: #f8fafc;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        .card {
+            background-color: #1e293b;
+            padding: 24px;
+            border-radius: 12px;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+            width: 100%;
+            max-width: 680px;
+            text-align: center;
+        }
+
+        h2 { 
+            margin: 0 0 16px 0; 
+            font-size: 1.4rem; 
+            color: #38bdf8; 
+        }
+
+        .controls-grid {
+            display: grid;
+            grid-template-columns: 1.3fr 1fr;
+            gap: 12px;
+            margin-bottom: 16px;
+            text-align: left;
+        }
+
+        label {
+            font-size: 0.8rem;
+            color: #94a3b8;
+            font-weight: 600;
+            display: block;
+            margin-bottom: 4px;
+        }
+
+        select {
+            width: 100%;
+            padding: 9px;
+            border-radius: 6px;
+            background-color: #334155;
+            color: #ffffff;
+            border: 1px solid #475569;
+            font-size: 0.85rem;
+            outline: none;
+            box-sizing: border-box;
+        }
+
+        select:focus { 
+            border-color: #38bdf8; 
+        }
+
+        optgroup { 
+            color: #94a3b8; 
+            background-color: #1e293b; 
+            font-weight: bold; 
+        }
+
+        option { 
+            color: #ffffff; 
+            background-color: #334155; 
+        }
+
+        video {
+            width: 100%;
+            max-height: 400px;
+            background-color: #020617;
+            border-radius: 8px;
+            border: 1px solid #334155;
+            object-fit: contain;
+        }
+
+        .actions {
+            margin-top: 16px;
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        button {
+            padding: 10px 18px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+
+        .btn-refresh { background-color: #6366f1; color: white; }
+        .btn-start { background-color: #10b981; color: white; }
+        .btn-stop { background-color: #ef4444; color: white; }
+
+        button:disabled { 
+            opacity: 0.4; 
+            cursor: not-allowed; 
+        }
+
+        #status { 
+            margin-top: 14px; 
+            font-size: 0.85rem; 
+            color: #94a3b8; 
+        }
+
+        .badge { 
+            color: #38bdf8; 
+            font-weight: bold; 
+        }
+
+        .error { 
+            color: #f87171; 
+            font-weight: bold; 
+        }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h2>Camera Streamer</h2>
+
+    <div class="controls-grid">
+        <div>
+            <label for="cameraSelect">Camera Source / Sensor:</label>
+            <select id="cameraSelect">
+                <option value="">Scanning cameras...</option>
+            </select>
+        </div>
+        <div>
+            <label for="resolutionSelect">Resolution:</label>
+            <select id="resolutionSelect">
+                <option value="1280x720" selected>1280 × 720 (720p HD - 16:9)</option>
+                <option value="1920x1080">1920 × 1080 (1080p FHD - 16:9)</option>
+                <option value="640x480">640 × 480 (SD - 4:3)</option>
+                <option value="320x240">320 × 240 (Fast Minimal)</option>
+                <option value="default">Camera Native (Safe)</option>
+            </select>
+        </div>
+    </div>
+
+    <video id="webcam" autoplay playsinline muted></video>
+    <canvas id="captureCanvas" style="display: none;"></canvas>
+
+    <div class="actions">
+        <button id="refreshBtn" class="btn-refresh">Refresh Devices</button>
+        <button id="startBtn" class="btn-start">Start Stream</button>
+        <button id="stopBtn" class="btn-stop" disabled>Stop</button>
+    </div>
+
+    <p id="status">Scanning cameras...</p>
+</div>
+
+<script>
+    const cameraSelect = document.getElementById('cameraSelect');
+    const resolutionSelect = document.getElementById('resolutionSelect');
+    const refreshBtn = document.getElementById('refreshBtn');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const statusEl = document.getElementById('status');
+    const video = document.getElementById('webcam');
+    const canvas = document.getElementById('captureCanvas');
+    const ctx = canvas.getContext('2d');
+
+    let ws = null;
+    let stream = null;
+    let sendInterval = null;
+    const TARGET_FPS = 25;
+
+    // Detect cameras and populate dropdown
+    async function updateDeviceList() {
+        try {
+            statusEl.innerText = "Querying camera devices...";
+
+            // Acquire temporary permission to reveal hardware names/labels
+            const temp = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+            temp.getTracks().forEach(t => t.stop());
+
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const videoInputs = devices.filter(d => d.kind === 'videoinput');
+
+            const previousSelection = cameraSelect.value;
+            cameraSelect.innerHTML = '';
+
+            // Group 1: Hardware-specific endpoints (External USB cameras, capture cards)
+            const hwGroup = document.createElement('optgroup');
+            hwGroup.label = "Hardware / USB Webcams";
+
+            videoInputs.forEach((device, index) => {
+                const opt = document.createElement('option');
+                opt.value = `id:${device.deviceId}`;
+                let label = device.label || `Camera ${index + 1}`;
+                if (label.toLowerCase().includes("usb") || !label.toLowerCase().includes("microsoft")) {
+                    label = `📷 ${label}`;
+                }
+                opt.text = label;
+                hwGroup.appendChild(opt);
+            });
+            cameraSelect.appendChild(hwGroup);
+
+            // Group 2: Surface Sensor Modes (Forces Surface ISP front/rear direction)
+            const surfaceGroup = document.createElement('optgroup');
+            surfaceGroup.label = "Surface Integrated Sensors";
+
+            const frontOpt = document.createElement('option');
+            frontOpt.value = "facing:user";
+            frontOpt.text = "Surface Front Camera (User)";
+
+            const rearOpt = document.createElement('option');
+            rearOpt.value = "facing:environment";
+            rearOpt.text = "Surface Rear Camera (Environment)";
+
+            surfaceGroup.appendChild(frontOpt);
+            surfaceGroup.appendChild(rearOpt);
+            cameraSelect.appendChild(surfaceGroup);
+
+            // Restore previous choice if still available
+            if (previousSelection && [...cameraSelect.options].some(o => o.value === previousSelection)) {
+                cameraSelect.value = previousSelection;
+            }
+
+            statusEl.innerText = `Ready. Found ${videoInputs.length} hardware camera(s).`;
+        } catch (err) {
+            console.error("Device detection error:", err);
+            statusEl.innerText = `Camera access error: ${err.message}`;
+        }
+    }
+
+    // Acquire stream with multi-tiered resolution and bandwidth negotiation
+    async function acquireCameraStream(selectedTarget, resChoice) {
+        let targetW = 0;
+        let targetH = 0;
+
+        if (resChoice !== "default") {
+            [targetW, targetH] = resChoice.split('x').map(Number);
+        }
+
+        const isDeviceId = selectedTarget.startsWith("id:");
+        const devId = isDeviceId ? selectedTarget.replace("id:", "") : null;
+        const isRear = selectedTarget === "facing:environment";
+        const isFront = selectedTarget === "facing:user";
+
+        // TIER 1: Strict HD & 16:9 Aspect Ratio
+        if (targetW > 640) {
+            try {
+                const strictConstraints = {
+                    video: {
+                        ...(devId && { deviceId: { exact: devId } }),
+                        ...(isRear && { facingMode: { exact: "environment" } }),
+                        ...(isFront && { facingMode: { exact: "user" } }),
+                        width: { min: targetW, ideal: targetW },
+                        height: { min: targetH, ideal: targetH },
+                        aspectRatio: { ideal: targetW / targetH }
+                    },
+                    audio: false
+                };
+
+                return await navigator.mediaDevices.getUserMedia(strictConstraints);
+            } catch (strictErr) {
+                console.warn("Strict 720p+ failed (likely USB bus bandwidth limit). Attempting reduced frame rate...", strictErr);
+            }
+
+            // TIER 2: Exact Dimensions with Relaxed Frame Rate (Allows 720p/1080p across USB 2.0 YUY2)
+            try {
+                const bandwidthFriendlyConstraints = {
+                    video: {
+                        ...(devId && { deviceId: { exact: devId } }),
+                        ...(isRear && { facingMode: { ideal: "environment" } }),
+                        ...(isFront && { facingMode: { ideal: "user" } }),
+                        width: { exact: targetW },
+                        height: { exact: targetH },
+                        frameRate: { ideal: 20, max: 25 }
+                    },
+                    audio: false
+                };
+
+                return await navigator.mediaDevices.getUserMedia(bandwidthFriendlyConstraints);
+            } catch (bwErr) {
+                console.warn("Exact dimension lock failed. Falling back to ideal match...", bwErr);
+            }
+        }
+
+        // TIER 3: Standard Fallback (Native or SD)
+        const standardConstraints = {
+            video: {
+                ...(devId && { deviceId: { ideal: devId } }),
+                ...(isRear && { facingMode: { ideal: "environment" } }),
+                ...(isFront && { facingMode: { ideal: "user" } }),
+                ...(targetW > 0 && {
+                    width: { ideal: targetW },
+                    height: { ideal: targetH }
+                })
+            },
+            audio: false
+        };
+
+        const streamResult = await navigator.mediaDevices.getUserMedia(standardConstraints);
+
+        // Apply dynamic upgrade on active track if it started below requested HD target
+        if (targetW > 640) {
+            const track = streamResult.getVideoTracks()[0];
+            try {
+                await track.applyConstraints({
+                    width: { ideal: targetW },
+                    height: { ideal: targetH },
+                    aspectRatio: { ideal: 1.777778 }
+                });
+            } catch (e) {
+                console.warn("In-place constraint upgrade bypassed:", e);
+            }
+        }
+
+        return streamResult;
+    }
+
+    async function startStream() {
+        const selectedTarget = cameraSelect.value;
+        const resChoice = resolutionSelect.value;
+
+        // Release hardware locks on any currently running sensor
+        if (stream) {
+            stream.getTracks().forEach(t => t.stop());
+            stream = null;
+        }
+
+        try {
+            statusEl.innerText = "Activating camera...";
+            stream = await acquireCameraStream(selectedTarget, resChoice);
+            video.srcObject = stream;
+
+            const videoTrack = stream.getVideoTracks()[0];
+            const settings = videoTrack.getSettings();
+            const activeWidth = settings.width || 640;
+            const activeHeight = settings.height || 480;
+
+            canvas.width = activeWidth;
+            canvas.height = activeHeight;
+
+            // Connect to WebSocket server in Python
+            ws = new WebSocket('ws://localhost:8765');
+            ws.binaryType = 'arraybuffer';
+
+            ws.onopen = () => {
+                statusEl.innerHTML = `Streaming: <span class="badge">${activeWidth}x${activeHeight}</span> [${videoTrack.label || 'Active'}]`;
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+                refreshBtn.disabled = true;
+                cameraSelect.disabled = true;
+                resolutionSelect.disabled = true;
+
+                sendInterval = setInterval(() => {
+                    if (ws.readyState === WebSocket.OPEN && video.readyState >= 2) {
+                        ctx.drawImage(video, 0, 0, activeWidth, activeHeight);
+                        canvas.toBlob((blob) => {
+                            if (blob && ws.readyState === WebSocket.OPEN) {
+                                blob.arrayBuffer().then(buf => ws.send(buf));
+                            }
+                        }, 'image/jpeg', 0.65);
+                    }
+                }, 1000 / TARGET_FPS);
+            };
+
+            ws.onerror = () => {
+                statusEl.innerHTML = `<span class="error">WebSocket error:</span> Python server.py is not reachable on port 8765.`;
+                stopStream();
+            };
+
+            ws.onclose = () => stopStream();
+
+        } catch (err) {
+            console.error("Camera start failure:", err);
+            let explanation = err.message;
+            if (err.name === "NotReadableError") {
+                explanation = "Camera is already in use by another application.";
+            } else if (err.name === "OverconstrainedError") {
+                explanation = "Camera cannot support this resolution. Try 'Camera Native (Safe)'.";
+            }
+            statusEl.innerHTML = `<span class="error">${err.name}:</span> ${explanation}`;
+            stopStream();
+        }
+    }
+
+    function stopStream() {
+        if (sendInterval) {
+            clearInterval(sendInterval);
+            sendInterval = null;
+        }
+        if (stream) {
+            stream.getTracks().forEach(t => t.stop());
+            video.srcObject = null;
+            stream = null;
+        }
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.close();
+            ws = null;
+        }
+
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+        refreshBtn.disabled = false;
+        cameraSelect.disabled = false;
+        resolutionSelect.disabled = false;
+        statusEl.innerText = "Status: Stopped";
+    }
+
+    // Automatically re-query when devices are plugged or unplugged
+    navigator.mediaDevices.addEventListener('devicechange', () => {
+        if (!stream) updateDeviceList();
+    });
+
+    refreshBtn.addEventListener('click', updateDeviceList);
+    startBtn.addEventListener('click', startStream);
+    stopBtn.addEventListener('click', stopStream);
+    window.addEventListener('DOMContentLoaded', updateDeviceList);
+</script>
+
+</body>
+</html>
