@@ -181,7 +181,9 @@
     let ws = null;
     let stream = null;
     let sendInterval = null;
+    let frameInFlight = false;
     const TARGET_FPS = 25;
+    const MAX_BUFFERED_BYTES = 1 << 20; // ~1 MB; skip frames if the socket backs up
 
     // Detect cameras and populate dropdown
     async function updateDeviceList() {
@@ -365,14 +367,21 @@
                 resolutionSelect.disabled = true;
 
                 sendInterval = setInterval(() => {
-                    if (ws.readyState === WebSocket.OPEN && video.readyState >= 2) {
-                        ctx.drawImage(video, 0, 0, activeWidth, activeHeight);
-                        canvas.toBlob((blob) => {
-                            if (blob && ws.readyState === WebSocket.OPEN) {
-                                blob.arrayBuffer().then(buf => ws.send(buf));
-                            }
-                        }, 'image/jpeg', 0.65);
-                    }
+                    if (ws.readyState !== WebSocket.OPEN || video.readyState < 2) return;
+
+                    // Back-pressure: if a frame is still encoding, or the socket hasn't
+                    // flushed prior frames, drop this frame instead of queueing it. Bounds
+                    // memory and keeps latency from drifting upward over time.
+                    if (frameInFlight || ws.bufferedAmount > MAX_BUFFERED_BYTES) return;
+
+                    frameInFlight = true;
+                    ctx.drawImage(video, 0, 0, activeWidth, activeHeight);
+                    canvas.toBlob((blob) => {
+                        if (blob && ws && ws.readyState === WebSocket.OPEN) {
+                            ws.send(blob); // send Blob directly — no ArrayBuffer copy
+                        }
+                        frameInFlight = false;
+                    }, 'image/jpeg', 0.65);
                 }, 1000 / TARGET_FPS);
             };
 
@@ -401,6 +410,7 @@
             clearInterval(sendInterval);
             sendInterval = null;
         }
+        frameInFlight = false;
         if (stream) {
             stream.getTracks().forEach(t => t.stop());
             video.srcObject = null;
